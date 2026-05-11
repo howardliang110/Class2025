@@ -1,254 +1,321 @@
+"""
+ETF 三大法人買超前 20 名爬蟲任務
+===================================
+
+每日抓取三大法人（外資、投信、自營商）對所有 ETF 的買賣超資料，
+取淨買超前 20 名，並補充每檔 ETF 的當日 OHLCV、漲跌幅、5 日趨勢等資訊，
+最後寫入 MySQL，供後續視覺化（Redash）和排程（Airflow）使用。
+
+資料來源: FinMind API (https://finmindtrade.com/)
+- TaiwanStockInstitutionalInvestorsBuySell: 三大法人買賣超
+- TaiwanStockPrice: 日線 OHLCV
+- TaiwanStockInfo: 股票基本資料（含中文名稱與類型）
+
+執行流程:
+    1. 取得指定日期所有 ETF 的三大法人買賣超
+    2. 計算淨買超 (Buy - Sell) 並排序取前 20
+    3. 為每檔 ETF 抓取近 N 日股價，計算當日漲幅和 5 日趨勢
+    4. 合併資料並寫入 MySQL 表 EtfTop20BuyInstitutional
+"""
+
 import time
 from datetime import datetime, timedelta
 
 import pandas as pd
 import requests
-import yfinance as yf
 from loguru import logger
-from sqlalchemy import (
-    BigInteger,
-    Column,
-    Date,
-    Float,
-    Integer,
-    MetaData,
-    String,
-    Table,
-    create_engine,
-)
-from sqlalchemy.dialects.mysql import (
-    insert,
-)  # 專用於 MySQL 的 insert 語法，可支援 on_duplicate_key_update
+from sqlalchemy import create_engine
 
-from crawler.config import MYSQL_ACCOUNT, MYSQL_HOST, MYSQL_PASSWORD, MYSQL_PORT
+from crawler.config import (
+    MYSQL_ACCOUNT,
+    MYSQL_HOST,
+    MYSQL_PASSWORD,
+    MYSQL_PORT,
+)
 from crawler.worker import app
 
-
-# 教學用: 最簡單版本, 只抓資料並印出, 不上傳資料庫
-# 適合初學者第一次派送任務時驗證流程
-@app.task()
-def crawler_etf_top20_print(date: str = None):
-    # 輸入 date 格式 YYYYMMDD, 例如 20260508
-    # 若沒傳, 預設抓今天 (假日會回傳空資料, 由呼叫端處理)
-    if date is None:
-        date = datetime.now().strftime("%Y%m%d")
-
-    logger.info(f"[crawler_etf_top20_print] start, date={date}")
-
-    df = fetch_twse_etf_volume(date)
-    if df.empty:
-        logger.warning(f"{date} 無 ETF 成交資料 (可能為假日)")
-        return
-
-    df_top20 = df.sort_values("Trading_Volume", ascending=False).head(20).reset_index(drop=True)
-    df_top20["rank"] = df_top20.index + 1
-
-    print(df_top20)
+# ============================================================
+# 常數設定
+# ============================================================
+FINMIND_API = "https://api.finmindtrade.com/api/v4/data"
+MYSQL_DATABASE = "mydb"  # 與 mysql.yml 中 MYSQL_DATABASE 一致
+TABLE_NAME = "EtfTop20BuyInstitutional"
+TOP_N = 20  # 取前 N 名
+TREND_DAYS = 5  # 趨勢計算天數
 
 
-# 註冊 task, 有註冊的 task 才可以變成任務發送給 rabbitmq
-# 正式版: 抓資料 → 排序取前 20 → 用 yfinance 補資料 → 寫入 MySQL
-@app.task()
-def crawler_etf_top20(date: str = None):
-    if date is None:
-        date = datetime.now().strftime("%Y%m%d")
-
-    logger.info(f"[crawler_etf_top20] start, date={date}")
-
-    # Step 1: 從 TWSE 抓當日所有 ETF 的成交資料
-    df = fetch_twse_etf_volume(date)
-    if df.empty:
-        logger.warning(f"{date} 無 ETF 成交資料 (可能為假日)")
-        return
-
-    # Step 2: 依成交量排序, 取前 20 名
-    df_top20 = df.sort_values("Trading_Volume", ascending=False).head(20).reset_index(drop=True)
-    df_top20["rank"] = df_top20.index + 1
-
-    # Step 3: 用 yfinance 補上「漲跌幅」欄位 (TWSE API 沒有直接給)
-    df_top20 = enrich_with_yfinance(df_top20, date)
-
-    print(df_top20)
-
-    # Step 4: 寫入 MySQL, 主鍵是 (date, stock_id), 重複會自動 update
-    upload_etf_top20_to_mysql(df_top20)
-
-
-# ---------------------------------------------------------------
-# 以下是 task 會用到的工具函式 (helper functions)
-# ---------------------------------------------------------------
-
-
-def fetch_twse_etf_volume(date: str) -> pd.DataFrame:
-    """從 TWSE (證交所) 抓取指定日期的 ETF 成交資料
-
-    Args:
-        date: YYYYMMDD 格式, ex: 20260508
-
-    Returns:
-        DataFrame, 含每支 ETF 的當日成交資訊
-    """
-    # TWSE 官方 API, type=0099P 代表 ETF 類股
-    url = "https://www.twse.com.tw/rwd/zh/afterTrading/BFIAUU"
-    params = {
-        "date": date,
-        "type": "0099P",  # 0099P = ETF
-        "response": "json",
-    }
-    headers = {
-        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"
-    }
-
-    resp = requests.get(url, params=params, headers=headers, timeout=30)
-    data = resp.json()
-
-    # TWSE 假日 / 無資料時 stat 不會是 OK
-    if data.get("stat") != "OK":
-        logger.info(f"TWSE API 回應: {data.get('stat')}")
-        return pd.DataFrame()
-
-    rows = data.get("data", [])
-    if not rows:
-        return pd.DataFrame()
-
-    # 欄位順序對應 TWSE API 回傳格式
-    df = pd.DataFrame(
-        rows,
-        columns=[
-            "stock_id",
-            "stock_name",
-            "Trading_Volume",
-            "Trading_turnover",
-            "Trading_money",
-            "open",
-            "max",
-            "min",
-            "close",
-            "spread_sign",
-            "spread",
-            "last_bid_price",
-            "last_bid_volume",
-            "last_ask_price",
-            "last_ask_volume",
-            "PE_ratio",
-        ],
-    )
-
-    # 加上 date 欄位 (轉成 YYYY-MM-DD 格式, 方便存入 MySQL DATE 型態)
-    df["date"] = pd.to_datetime(date).strftime("%Y-%m-%d")
-
-    # 數字欄位清洗: 拿掉逗號、處理 "--", 轉型
-    int_cols = ["Trading_Volume", "Trading_money", "Trading_turnover"]
-    float_cols = ["open", "max", "min", "close"]
-
-    for col in int_cols:
-        df[col] = (
-            df[col].astype(str).str.replace(",", "").str.replace("--", "0").astype("int64")
-        )
-    for col in float_cols:
-        df[col] = (
-            df[col].astype(str).str.replace(",", "").str.replace("--", "0").astype(float)
-        )
-
-    # 只保留需要的欄位 (對應後續 MySQL table 結構)
-    df = df[
-        [
-            "date",
-            "stock_id",
-            "stock_name",
-            "Trading_Volume",
-            "Trading_money",
-            "Trading_turnover",
-            "open",
-            "max",
-            "min",
-            "close",
-        ]
-    ]
-
-    return df
-
-
-def enrich_with_yfinance(df: pd.DataFrame, date: str) -> pd.DataFrame:
-    """用 yfinance 補上「漲跌幅 spread」欄位
-
-    yfinance 拿前一交易日收盤價, 算當日漲跌幅:
-        spread = close - prev_close
-
-    這樣組員後續做分析時能直接看到漲跌, 不用再算
-    """
-    target_date = pd.to_datetime(date).strftime("%Y-%m-%d")
-    spreads = []
-
-    for stock_id in df["stock_id"]:
-        try:
-            # 台股 ETF 在 yahoo finance 的代號是 {stock_id}.TW
-            ticker = yf.Ticker(f"{stock_id}.TW")
-            # 抓前後 5 天, 確保能拿到「前一交易日」的資料
-            hist = ticker.history(
-                start=(pd.to_datetime(date) - timedelta(days=7)).strftime("%Y-%m-%d"),
-                end=(pd.to_datetime(date) + timedelta(days=1)).strftime("%Y-%m-%d"),
-            )
-            if len(hist) < 2:
-                spreads.append(0.0)
-                continue
-            # 取最後兩筆 (前一交易日 + 當日)
-            prev_close = hist["Close"].iloc[-2]
-            today_close = hist["Close"].iloc[-1]
-            spreads.append(round(today_close - prev_close, 2))
-            time.sleep(0.2)  # 避免太頻繁打 yfinance
-        except Exception as e:
-            logger.warning(f"yfinance 抓 {stock_id} 失敗: {e}")
-            spreads.append(0.0)
-
-    df["spread"] = spreads
-    return df
-
-
-def upload_etf_top20_to_mysql(df: pd.DataFrame):
-    """將 ETF 前 20 名寫入 MySQL, 重複資料以 on_duplicate_key_update 處理
-
-    主鍵設計: (date, stock_id)
-    這樣同一天同一支 ETF 不會重複寫入, 重跑會自動覆蓋更新
-    """
-    # 上傳到 tibame database, 同學可切換成自己的 database
+# ============================================================
+# 共用工具函式
+# ============================================================
+def get_mysql_engine():
+    """建立 MySQL SQLAlchemy 連線引擎"""
     address = (
         f"mysql+pymysql://{MYSQL_ACCOUNT}:{MYSQL_PASSWORD}"
-        f"@{MYSQL_HOST}:{MYSQL_PORT}/tibame"
+        f"@{MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_DATABASE}"
     )
-    engine = create_engine(address)
+    return create_engine(address)
 
-    # 定義 table 結構, 對應 MySQL 中的 EtfDailyTop20 表
-    metadata = MetaData()
-    etf_top20_table = Table(
-        "EtfDailyTop20",
-        metadata,
-        Column("date", Date, primary_key=True),
-        Column("stock_id", String(20), primary_key=True),
-        Column("stock_name", String(50)),
-        Column("rank", Integer),
-        Column("Trading_Volume", BigInteger),
-        Column("Trading_money", BigInteger),
-        Column("Trading_turnover", BigInteger),
-        Column("open", Float),
-        Column("max", Float),
-        Column("min", Float),
-        Column("close", Float),
-        Column("spread", Float),
+
+def fetch_finmind(dataset: str, params: dict, retries: int = 3) -> pd.DataFrame:
+    """
+    呼叫 FinMind API 並回傳 DataFrame
+    含重試機制, 避免短暫網路問題或 rate limit
+    """
+    query = {"dataset": dataset, **params}
+    for attempt in range(retries):
+        try:
+            resp = requests.get(FINMIND_API, params=query, timeout=30)
+            data = resp.json()
+            if resp.status_code == 200 and data.get("status") == 200:
+                return pd.DataFrame(data.get("data", []))
+            logger.warning(
+                f"[fetch_finmind] {dataset} 回傳異常: "
+                f"status={data.get('status')}, msg={data.get('msg')}"
+            )
+        except Exception as e:
+            logger.error(f"[fetch_finmind] {dataset} 嘗試 {attempt + 1} 失敗: {e}")
+        time.sleep(2)
+    # 全部失敗就回空 DataFrame, 由呼叫端決定要不要中止
+    return pd.DataFrame()
+
+
+def get_etf_list() -> pd.DataFrame:
+    """
+    取得所有 ETF 的 stock_id 與 stock_name
+    台股 ETF 代號規則: 多為 00XX 開頭 (如 0050, 0056, 00878)
+    使用 TaiwanStockInfo 並過濾 industry_category = 'ETF'
+    """
+    logger.info("[get_etf_list] 抓取 ETF 清單")
+    df = fetch_finmind("TaiwanStockInfo", {})
+    if df.empty:
+        logger.error("[get_etf_list] TaiwanStockInfo 抓取失敗")
+        return df
+    # 篩選 ETF 類別
+    etf_df = df[df["industry_category"] == "ETF"][
+        ["stock_id", "stock_name"]
+    ].drop_duplicates()
+    logger.info(f"[get_etf_list] 共抓到 {len(etf_df)} 檔 ETF")
+    return etf_df
+
+
+# ============================================================
+# 主要 Celery Task
+# ============================================================
+@app.task()
+def crawler_etf_top20_institutional(target_date: str = None):
+    """
+    主任務: 抓取指定日期三大法人買超前 20 名 ETF
+
+    Args:
+        target_date: 目標日期, 格式 'YYYY-MM-DD'
+                     未指定則用「昨天」(因為當日資料通常晚上才更新)
+
+    執行步驟:
+        1. 取得日期
+        2. 抓 ETF 清單
+        3. 抓三大法人買賣超
+        4. 計算淨買超並取前 20
+        5. 抓每檔 ETF 的 OHLCV 並計算技術指標
+        6. 合併資料寫入 MySQL
+    """
+    # ---------- 1. 決定目標日期 ----------
+    if target_date is None:
+        target_date = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    logger.info(f"========== ETF Top20 爬蟲開始: {target_date} ==========")
+
+    # ---------- 2. 取得 ETF 清單 (用來過濾 + 補名稱) ----------
+    etf_df = get_etf_list()
+    if etf_df.empty:
+        logger.error("ETF 清單為空, 任務中止")
+        return
+    etf_ids = set(etf_df["stock_id"].tolist())
+
+    # ---------- 3. 抓三大法人買賣超 ----------
+    logger.info(f"[step3] 抓取 {target_date} 三大法人買賣超")
+    inst_df = fetch_finmind(
+        "TaiwanStockInstitutionalInvestorsBuySell",
+        {"start_date": target_date, "end_date": target_date},
     )
-    # ✅ 自動建立 table (若不存在才建立)
-    metadata.create_all(engine)
+    if inst_df.empty:
+        logger.error(f"{target_date} 無三大法人資料 (可能非交易日或資料尚未更新)")
+        return
 
-    # 一筆一筆 upsert (主鍵衝突就 update)
-    for _, row in df.iterrows():
-        insert_stmt = insert(etf_top20_table).values(**row.to_dict())
-        update_stmt = insert_stmt.on_duplicate_key_update(
-            **{
-                col.name: insert_stmt.inserted[col.name]
-                for col in etf_top20_table.columns
+    # ---------- 4. 只保留 ETF, 加總三大法人, 取前 20 ----------
+    inst_df = inst_df[inst_df["stock_id"].isin(etf_ids)]
+    if inst_df.empty:
+        logger.error("過濾後無 ETF 三大法人資料")
+        return
+
+    # 計算淨買超 (買 - 賣), 並加總三大法人
+    inst_df["net_buy"] = inst_df["buy"] - inst_df["sell"]
+    agg_df = (
+        inst_df.groupby("stock_id", as_index=False)["net_buy"]
+        .sum()
+        .sort_values("net_buy", ascending=False)
+        .head(TOP_N)
+        .reset_index(drop=True)
+    )
+    agg_df["rank_num"] = agg_df.index + 1
+    logger.info(f"[step4] 取出前 {TOP_N} 名 ETF")
+
+    # ---------- 5. 抓每檔 ETF 的近期 OHLCV ----------
+    # 為了算 5 日趨勢, 需要往前抓多一些 (避免遇到假日)
+    # 抓 15 天確保至少有 5 個交易日
+    price_start = (
+        datetime.strptime(target_date, "%Y-%m-%d") - timedelta(days=15)
+    ).strftime("%Y-%m-%d")
+
+    enriched_rows = []
+    for _, row in agg_df.iterrows():
+        sid = row["stock_id"]
+        logger.info(f"[step5] 抓取 {sid} 的 OHLCV")
+        price_df = fetch_finmind(
+            "TaiwanStockPrice",
+            {"data_id": sid, "start_date": price_start, "end_date": target_date},
+        )
+        if price_df.empty:
+            logger.warning(f"  {sid} 無價格資料, 跳過")
+            continue
+        # 依日期排序, 取最近 6 筆 (當日 + 前 5 個交易日)
+        price_df = price_df.sort_values("date").reset_index(drop=True)
+        # 過濾出 <= target_date 的資料
+        price_df = price_df[price_df["date"] <= target_date].reset_index(drop=True)
+        if len(price_df) == 0:
+            continue
+
+        # 當日資料 (最後一筆)
+        today = price_df.iloc[-1]
+        # 5 日前的收盤 (用來算 5 日趨勢)
+        if len(price_df) >= TREND_DAYS + 1:
+            five_day_ago_close = price_df.iloc[-(TREND_DAYS + 1)]["close"]
+            five_day_trend = (
+                (today["close"] - five_day_ago_close) / five_day_ago_close * 100
+            )
+        else:
+            five_day_trend = None  # 資料不足
+
+        # 當日漲幅: FinMind 自帶 spread (前一日收盤差), 但我們用收盤對前一日收盤計算更直觀
+        if len(price_df) >= 2:
+            prev_close = price_df.iloc[-2]["close"]
+            daily_change = (today["close"] - prev_close) / prev_close * 100
+        else:
+            daily_change = None
+
+        # 從 etf_df 補中文名稱
+        name_lookup = etf_df.set_index("stock_id")["stock_name"].to_dict()
+        stock_name = name_lookup.get(sid, "")
+
+        enriched_rows.append(
+            {
+                "date": today["date"],
+                "stock_id": sid,
+                "stock_name": stock_name,
+                "trading_volume": int(today.get("Trading_Volume", 0) or 0),
+                "open_price": float(today["open"]),
+                "close_price": float(today["close"]),
+                "high_price": float(today["max"]),
+                "low_price": float(today["min"]),
+                "daily_change_pct": (
+                    round(daily_change, 4) if daily_change is not None else None
+                ),
+                "five_day_trend_pct": (
+                    round(five_day_trend, 4) if five_day_trend is not None else None
+                ),
+                "institutional_net_buy": int(row["net_buy"]),
+                "rank_num": int(row["rank_num"]),
             }
         )
-        with engine.begin() as conn:
-            conn.execute(update_stmt)
+        # FinMind 免費版有 rate limit, 禮貌性 sleep
+        time.sleep(0.3)
 
-    logger.info(f"[upload_etf_top20_to_mysql] OK, wrote {len(df)} rows")
+    if not enriched_rows:
+        logger.error("最終無可寫入資料")
+        return
+
+    final_df = pd.DataFrame(enriched_rows)
+    logger.info(f"[step6] 準備寫入 {len(final_df)} 筆資料")
+
+    # ---------- 6. 寫入 MySQL ----------
+    upload_etf_top20_to_mysql(final_df, target_date)
+    logger.info(f"========== ETF Top20 爬蟲完成: {target_date} ==========")
+
+
+def upload_etf_top20_to_mysql(df: pd.DataFrame, target_date: str):
+    """
+    寫入 MySQL: 先刪除當日舊資料避免重複, 再 append 新資料
+    保留歷史, 但同一日期只會有一份最新資料 (idempotent)
+    """
+    engine = get_mysql_engine()
+
+    # 先確保資料表存在 (第一次執行時自動建立)
+    create_sql = f"""
+    CREATE TABLE IF NOT EXISTS `{TABLE_NAME}` (
+        `id` BIGINT AUTO_INCREMENT PRIMARY KEY,
+        `date` DATE NOT NULL,
+        `stock_id` VARCHAR(10) NOT NULL,
+        `stock_name` VARCHAR(50),
+        `trading_volume` BIGINT,
+        `open_price` FLOAT,
+        `close_price` FLOAT,
+        `high_price` FLOAT,
+        `low_price` FLOAT,
+        `daily_change_pct` FLOAT COMMENT '當日漲跌幅(%)',
+        `five_day_trend_pct` FLOAT COMMENT '5日趨勢(%)',
+        `institutional_net_buy` BIGINT COMMENT '三大法人淨買超(股)',
+        `rank_num` INT COMMENT '當日名次',
+        `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY `uk_date_stock` (`date`, `stock_id`),
+        KEY `idx_date` (`date`),
+        KEY `idx_rank` (`date`, `rank_num`)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    """
+
+    with engine.begin() as conn:
+        from sqlalchemy import text
+
+        conn.execute(text(create_sql))
+        # 刪除當日舊資料 (idempotent)
+        conn.execute(
+            text(f"DELETE FROM `{TABLE_NAME}` WHERE `date` = :d"),
+            {"d": target_date},
+        )
+
+    # append 新資料
+    df.to_sql(TABLE_NAME, con=engine, if_exists="append", index=False)
+    logger.info(f"[upload] 成功寫入 {len(df)} 筆到 {TABLE_NAME}")
+
+
+# ============================================================
+# 測試版: 不寫 DB, 只印出, 用於 debug
+# ============================================================
+@app.task()
+def crawler_etf_top20_institutional_print(target_date: str = None):
+    """同上, 但只印出不寫 DB, 方便測試"""
+    if target_date is None:
+        target_date = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    logger.info(f"[PRINT MODE] {target_date}")
+
+    etf_df = get_etf_list()
+    if etf_df.empty:
+        return
+    etf_ids = set(etf_df["stock_id"].tolist())
+
+    inst_df = fetch_finmind(
+        "TaiwanStockInstitutionalInvestorsBuySell",
+        {"start_date": target_date, "end_date": target_date},
+    )
+    if inst_df.empty:
+        logger.error(f"{target_date} 無三大法人資料")
+        return
+
+    inst_df = inst_df[inst_df["stock_id"].isin(etf_ids)]
+    inst_df["net_buy"] = inst_df["buy"] - inst_df["sell"]
+    agg_df = (
+        inst_df.groupby("stock_id", as_index=False)["net_buy"]
+        .sum()
+        .sort_values("net_buy", ascending=False)
+        .head(TOP_N)
+    )
+    name_lookup = etf_df.set_index("stock_id")["stock_name"].to_dict()
+    agg_df["stock_name"] = agg_df["stock_id"].map(name_lookup)
+    print(agg_df.to_string(index=False))

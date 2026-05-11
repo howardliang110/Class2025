@@ -8,15 +8,15 @@ services:
       ports: 
         # docker publish port 3306 to 3306 
         # (將 docker 內部 ip 3306, 跟外部 3306 做連結)
-          - 3306:3306
+          - 3307:3306
         # - target: 3306
         #   published: 3306
         #   mode: host
       environment: # 環境變數, 設置 db, user, password, root_password
           MYSQL_DATABASE: mydb
           MYSQL_USER: user
-          MYSQL_PASSWORD: Ab1234567890
-          MYSQL_ROOT_PASSWORD: Ab1234567890
+          MYSQL_PASSWORD: Aa1234567890
+          MYSQL_ROOT_PASSWORD: Aa1234567890
       restart: always  # 若容器停止或崩潰，自動重新啟動
       volumes:
           - mysql:/var/lib/mysql
@@ -25,14 +25,14 @@ services:
           # 將 docker container 的 volumes 跟外部 volumes 做連結, 
           # 讓資料不會因為, container close or update, 而遺失
       networks:
-          - my_network
+          - my_swarm_network
 
   phpmyadmin:
       # 升級到 5.2, 支援 amd64 / arm64 (Mac M1/M2 適用)
       image: phpmyadmin:5.2
       restart: always  # 若容器停止或崩潰，自動重新啟動
       ports:
-          - 8000:80
+          - 8080:80
       environment:
           # 使用 network 服務名稱連線到 mysql (取代過時的 links 寫法)
           PMA_HOST: mysql
@@ -40,10 +40,10 @@ services:
       depends_on:
         - mysql
       networks:
-          - my_network
+          - my_swarm_network
      
 networks:
-  my_network:
+  my_swarm_network:
     # 加入已經存在的網路
     external: true
 

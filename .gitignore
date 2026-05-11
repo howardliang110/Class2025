@@ -7,3 +7,15 @@
 *.egg-info
 .cache
 build/
+# ===== 補強 =====
+.env
+.env.host
+.env.local
+*.swp
+*.swo
+.venv/
+venv/
+*.tar.gz
+taiwan_stock_price.csv
+mysql.yml.swp
+.mysql.yml.swp
