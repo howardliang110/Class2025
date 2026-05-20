@@ -1,6 +1,19 @@
 # 這個檔案集中管理所有環境變數設定
 # 統一從這裡 import, 不要在各處直接用 os.environ, 方便日後統一維護
 import os
+from pathlib import Path
+
+# 自動讀取專案根目錄的 .env (簡易實作, 不依賴 python-dotenv 套件)
+_env_path = Path(__file__).resolve().parent.parent / ".env"
+if _env_path.exists():
+    with open(_env_path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            # 只在環境變數沒設定時才從 .env 載入 (環境變數優先)
+            os.environ.setdefault(key.strip(), value.strip())
 
 # os.environ.get(key, default):
 # 如果系統有設定環境變數就用環境變數, 沒有就用預設值

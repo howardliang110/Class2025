@@ -32,6 +32,7 @@ app = Celery(
         "crawler.tasks_crawler_finmind",  # FinMind 爬蟲任務
         "crawler.tasks_crawler_finmind_duplicate",  # FinMind 重複資料檢查任務
         "crawler.tasks_crawler_etf_top20",  # ETF 三大法人 Top 20 爬蟲 (本次新增)
+        "crawler.tasks_crawler_etf_top20_v2",  # ETF Top 20 v2 (證交所 + yfinance)
     ],
     # broker: 指定訊息中介的連線網址, Celery 會把任務送到這裡排隊
     # 格式: pyamqp://帳號:密碼@主機:埠號/
