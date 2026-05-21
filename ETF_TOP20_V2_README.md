@@ -1,14 +1,5 @@
 # ETF Top 20 v2 — 證交所 + yfinance (免費版)
 
-## 與 v1 差異
-
-| 項目 | v1 (FinMind) | v2 (證交所 + yfinance) |
-|------|--------------|------------------------|
-| 資料源 | FinMind API | 證交所 T86 + yfinance |
-| 費用 | 三大法人需付費 token | 完全免費 |
-| 欄位 | 13 欄位 | 8 欄位 + rank |
-| Table | EtfTop20BuyInstitutional | EtfTop20BuyInstitutionalV2 |
-
 ## 使用方式
 
 ```bash
