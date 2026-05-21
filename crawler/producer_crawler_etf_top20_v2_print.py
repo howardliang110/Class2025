@@ -3,7 +3,6 @@ ETF Top 20 v2 - Producer (Print 模式, 不寫 DB)
 ==============================================
 用法:
     uv run python -m crawler.producer_crawler_etf_top20_v2_print
-    uv run python -m crawler.producer_crawler_etf_top20_v2_print 2025-05-13
 """
 
 import sys
