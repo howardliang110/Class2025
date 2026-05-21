@@ -245,20 +245,21 @@ def upload_to_mysql_v2(df: pd.DataFrame, target_date: str):
     create_sql = f"""
     CREATE TABLE IF NOT EXISTS `{TABLE_NAME}` (
         `id` BIGINT AUTO_INCREMENT PRIMARY KEY,
-        `date` DATE NOT NULL,
-        `stock_id` VARCHAR(10) NOT NULL,
-        `stock_name` VARCHAR(50),
-        `open_price` FLOAT,
-        `close_price` FLOAT,
-        `trading_volume_shares` BIGINT,
-        `trading_value` BIGINT,
-        `five_day_trend_pct` FLOAT,
-        `rank_num` INT,
+        `date` DATE NOT NULL COMMENT '日期',
+        `stock_id` VARCHAR(10) NOT NULL COMMENT '股票代號',
+        `stock_name` VARCHAR(50) COMMENT '股票名稱',
+        `open_price` FLOAT COMMENT '開盤價',
+        `close_price` FLOAT COMMENT '收盤價',
+        `trading_volume_shares` BIGINT COMMENT '成交股數',
+        `trading_value` BIGINT COMMENT '成交金額(元,近似)',
+        `five_day_trend_pct` FLOAT COMMENT '5日趨勢(%)',
+        `rank_num` INT COMMENT '三大法人淨買超名次',
         `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         UNIQUE KEY `uk_date_stock` (`date`, `stock_id`),
         KEY `idx_date` (`date`),
         KEY `idx_rank` (`date`, `rank_num`)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    COMMENT='ETF 三大法人買超前20名每日快照';
     """
 
     with engine.begin() as conn:
