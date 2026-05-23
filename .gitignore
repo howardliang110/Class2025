@@ -19,3 +19,6 @@ venv/
 taiwan_stock_price.csv
 mysql.yml.swp
 .mysql.yml.swp
+
+# 自動產生的空 DB 檔
+crawler.db

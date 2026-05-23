@@ -1,19 +1,14 @@
 """
-ETF 三大法人買超 Top 20 - v2 版本
+ETF 三大法人買超 Top 20 - v2 版本 (改進版)
 =====================================
 
-資料源切換: FinMind → 證交所 OpenAPI + yfinance
+資料源: 證交所 T86 + yfinance
 
-差別與 v1 (FinMind 版):
-- v1: 三大法人 + OHLCV + 漲幅/5日趨勢/名次/淨買超 全部存
-- v2: 簡化版, 只存 8 個欄位 + rank_num
-- v1: 需要 FinMind 付費 token
-- v2: 完全免費 (證交所公開 API + yfinance)
-
-資料來源:
-- 證交所 T86 三大法人買賣超日報 (免費, 無 token)
-  https://www.twse.com.tw/rwd/zh/fund/T86
-- yfinance: 抓 OHLCV, 算 5 日趨勢
+改進重點 (相對前一版):
+1. yfinance 改用「批次下載」(一次抓 20 檔), 大幅降低被 rate limit 機率
+2. yfinance 失敗時自動重試
+3. OHLCV 抓不到的 ETF 仍保留 rank (價格欄位填 NULL), 不整檔丟棄
+4. 加長請求間隔
 """
 
 import time
@@ -59,6 +54,9 @@ def is_etf_stock_id(stock_id: str) -> bool:
     return False
 
 
+# ============================================================
+# 1. 抓三大法人 (證交所 T86)
+# ============================================================
 def fetch_twse_t86(target_date: str, retries: int = 3) -> pd.DataFrame:
     date_str = target_date.replace("-", "")
     params = {"response": "json", "date": date_str, "selectType": "ALL"}
@@ -71,7 +69,9 @@ def fetch_twse_t86(target_date: str, retries: int = 3) -> pd.DataFrame:
 
     for attempt in range(retries):
         try:
-            resp = requests.get(TWSE_T86_URL, params=params, headers=headers, timeout=30)
+            resp = requests.get(
+                TWSE_T86_URL, params=params, headers=headers, timeout=30
+            )
             if resp.status_code != 200:
                 logger.warning(f"[fetch_twse_t86] HTTP {resp.status_code}")
                 time.sleep(2)
@@ -134,31 +134,113 @@ def calculate_net_buy(df: pd.DataFrame) -> pd.DataFrame:
     )
 
 
-def fetch_ohlcv_yfinance(stock_id: str, target_date: str, lookback_days: int = 15) -> pd.DataFrame:
+# ============================================================
+# 2. 抓 OHLCV (yfinance) - 改進版: 批次下載 + 重試
+# ============================================================
+def fetch_ohlcv_batch(
+    stock_ids: list, target_date: str, lookback_days: int = 15, retries: int = 2
+) -> dict:
+    """
+    一次批次下載多檔 ETF 的 OHLCV (大幅降低 rate limit 機率)
+    回傳 dict: { stock_id: DataFrame }
+    """
     try:
         import yfinance as yf
     except ImportError:
-        logger.error("[fetch_ohlcv_yfinance] yfinance 未安裝, 請執行 uv sync")
-        return pd.DataFrame()
+        logger.error("[fetch_ohlcv_batch] yfinance 未安裝")
+        return {}
 
-    ticker = f"{stock_id}.TW"
+    tickers = [f"{sid}.TW" for sid in stock_ids]
     end_dt = datetime.strptime(target_date, "%Y-%m-%d")
     end_str = (end_dt + timedelta(days=1)).strftime("%Y-%m-%d")
     start_str = (end_dt - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
 
-    try:
-        df = yf.download(ticker, start=start_str, end=end_str, progress=False, auto_adjust=False)
-        if df.empty:
-            return df
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-        df = df.reset_index()
-        return df
-    except Exception as e:
-        logger.warning(f"[fetch_ohlcv_yfinance] {ticker} 失敗: {e}")
-        return pd.DataFrame()
+    result = {}
+    for attempt in range(retries):
+        try:
+            # 一次下載所有 ticker
+            data = yf.download(
+                tickers,
+                start=start_str,
+                end=end_str,
+                progress=False,
+                auto_adjust=False,
+                group_by="ticker",
+                threads=True,
+            )
+            if data.empty:
+                logger.warning(f"[fetch_ohlcv_batch] attempt {attempt+1} 回傳空, 重試")
+                time.sleep(5)
+                continue
+
+            # 解析每檔 ticker 的資料
+            for sid, ticker in zip(stock_ids, tickers):
+                try:
+                    if len(tickers) == 1:
+                        # 單檔時欄位非 MultiIndex
+                        df = data.copy()
+                    else:
+                        # 多檔時用 ticker 取出該檔
+                        if ticker not in data.columns.get_level_values(0):
+                            continue
+                        df = data[ticker].copy()
+                    df = df.dropna(how="all")
+                    if not df.empty:
+                        df = df.reset_index()
+                        result[sid] = df
+                except Exception:
+                    continue
+
+            if result:
+                logger.info(
+                    f"[fetch_ohlcv_batch] 批次下載成功 {len(result)}/{len(stock_ids)} 檔"
+                )
+                return result
+
+        except Exception as e:
+            logger.warning(f"[fetch_ohlcv_batch] attempt {attempt+1} 失敗: {e}")
+            time.sleep(5)
+
+    return result
 
 
+def compute_metrics(price_df: pd.DataFrame, target_date: str):
+    """從單檔 OHLCV 算出 open/close/volume/value/trend"""
+    if price_df is None or price_df.empty:
+        return None
+
+    price_df = price_df.copy()
+    price_df["Date"] = pd.to_datetime(price_df["Date"])
+    target_dt = pd.to_datetime(target_date)
+    price_df = price_df[price_df["Date"] <= target_dt].sort_values("Date")
+    if len(price_df) == 0:
+        return None
+
+    today = price_df.iloc[-1]
+
+    if len(price_df) >= TREND_DAYS + 1:
+        past_close = price_df.iloc[-(TREND_DAYS + 1)]["Close"]
+        five_day_trend = (today["Close"] - past_close) / past_close * 100
+    else:
+        five_day_trend = None
+
+    volume_shares = int(today["Volume"]) if pd.notna(today["Volume"]) else 0
+    trading_value = int(volume_shares * float(today["Close"]))
+
+    return {
+        "open_price": round(float(today["Open"]), 4) if pd.notna(today["Open"]) else None,
+        "close_price": round(float(today["Close"]), 4) if pd.notna(today["Close"]) else None,
+        "trading_volume_shares": volume_shares,
+        "trading_value": trading_value,
+        "five_day_trend_pct": (
+            round(five_day_trend, 4) if five_day_trend is not None else None
+        ),
+    }
+
+
+# ============================================================
+# 3. 主任務 (改進版)
+# ============================================================
 @app.task()
 def crawler_etf_top20_v2(target_date: str = None):
     if target_date is None:
@@ -190,46 +272,35 @@ def crawler_etf_top20_v2(target_date: str = None):
     top_df["rank_num"] = top_df.index + 1
     logger.info(f"取出前 {TOP_N} 名 ETF")
 
+    # 改進: 批次下載所有 20 檔的 OHLCV (一次請求, 降低 rate limit)
+    stock_ids = top_df["stock_id"].tolist()
+    ohlcv_map = fetch_ohlcv_batch(stock_ids, target_date, lookback_days=15)
+
     enriched = []
     for _, row in top_df.iterrows():
         sid = row["stock_id"]
-        logger.info(f"[yfinance] 抓 {sid} {row['stock_name']} (rank {row['rank_num']})")
-        price_df = fetch_ohlcv_yfinance(sid, target_date, lookback_days=15)
-        if price_df.empty:
-            logger.warning(f"  {sid} 無 OHLCV, 跳過")
-            continue
+        metrics = compute_metrics(ohlcv_map.get(sid), target_date)
 
-        price_df["Date"] = pd.to_datetime(price_df["Date"])
-        target_dt = pd.to_datetime(target_date)
-        price_df = price_df[price_df["Date"] <= target_dt].sort_values("Date")
-        if len(price_df) == 0:
-            continue
+        if metrics is None:
+            # 改進: 即使 OHLCV 抓不到, 仍保留 rank, 價格欄位 NULL
+            logger.warning(f"  {sid} 無 OHLCV, 保留 rank 但價格為 NULL")
+            metrics = {
+                "open_price": None,
+                "close_price": None,
+                "trading_volume_shares": None,
+                "trading_value": None,
+                "five_day_trend_pct": None,
+            }
 
-        today = price_df.iloc[-1]
-
-        if len(price_df) >= TREND_DAYS + 1:
-            past_close = price_df.iloc[-(TREND_DAYS + 1)]["Close"]
-            five_day_trend = (today["Close"] - past_close) / past_close * 100
-        else:
-            five_day_trend = None
-
-        volume_shares = int(today["Volume"]) if pd.notna(today["Volume"]) else 0
-        trading_value = int(volume_shares * float(today["Close"]))
-
-        enriched.append({
-            "date": target_date,
-            "stock_id": sid,
-            "stock_name": row["stock_name"],
-            "open_price": round(float(today["Open"]), 4),
-            "close_price": round(float(today["Close"]), 4),
-            "trading_volume_shares": volume_shares,
-            "trading_value": trading_value,
-            "five_day_trend_pct": (
-                round(five_day_trend, 4) if five_day_trend is not None else None
-            ),
-            "rank_num": int(row["rank_num"]),
-        })
-        time.sleep(0.3)
+        enriched.append(
+            {
+                "date": target_date,
+                "stock_id": sid,
+                "stock_name": row["stock_name"],
+                "rank_num": int(row["rank_num"]),
+                **metrics,
+            }
+        )
 
     if not enriched:
         logger.error("最終無可寫入資料")
@@ -237,7 +308,7 @@ def crawler_etf_top20_v2(target_date: str = None):
 
     final_df = pd.DataFrame(enriched)
     upload_to_mysql_v2(final_df, target_date)
-    logger.info(f"========== ETF Top20 v2 完成: {target_date} ==========")
+    logger.info(f"========== ETF Top20 v2 完成: {target_date} ({len(final_df)} 筆) ==========")
 
 
 def upload_to_mysql_v2(df: pd.DataFrame, target_date: str):
@@ -273,6 +344,9 @@ def upload_to_mysql_v2(df: pd.DataFrame, target_date: str):
     logger.info(f"[upload_v2] 寫入 {len(df)} 筆到 {TABLE_NAME}")
 
 
+# ============================================================
+# Print 模式
+# ============================================================
 @app.task()
 def crawler_etf_top20_v2_print(target_date: str = None):
     if target_date is None:

@@ -1,0 +1,32 @@
+version: "3.8"
+
+services:
+  etf_worker:
+    image: howardlch/etf_crawler:1.1
+    command: >
+      uv run celery -A crawler.worker worker
+      --loglevel=info
+      --hostname=etf_worker@%h
+      --concurrency=1
+      -Q twse
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      WORKER_ACCOUNT: worker
+      WORKER_PASSWORD: worker
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      MYSQL_ACCOUNT: root
+      MYSQL_PASSWORD: Aa1234567890
+      LC_ALL: C.UTF-8
+      LANG: C.UTF-8
+    networks:
+      - my_swarm_network
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+
+networks:
+  my_swarm_network:
+    external: true
