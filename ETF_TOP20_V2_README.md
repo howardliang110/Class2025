@@ -131,9 +131,9 @@ uv sync
 #    MySQL: host=mysql:3306 (容器內) / localhost:3307 (外部), db=mydb, user=root
 ```
 
-## 🐳 Docker Image 版本
+### Docker Image 版本
 
-- **`howardlch/etf_crawler:1.1`** = `latest`：正式版 (批次下載 + 保留 rank, concurrency=1)
+- **`howardlch/etf_crawler:1.1`** = `latest`：正式版
 
 重新 build / 更新 image:
 ```bash
@@ -142,14 +142,14 @@ docker push howardlch/etf_crawler:1.1
 docker service update --image howardlch/etf_crawler:1.1 crawler_etf_worker
 ```
 
-## ⚠️ 重要設定 / 新手注意事項
+### 重要設定 / 新手注意事項
 
 1. **務必先啟動 Docker Desktop。** 否則所有 docker 指令都會失敗 (確認右下角鯨魚圖示是綠的)。
 2. **worker 必須用 `--concurrency=1`** (compose 已設)，避免多任務並發寫入 MySQL 造成資料缺漏，請勿改大。
 3. **容器內外連線位置不同：** 容器內用服務名 `mysql:3306`、`rabbitmq:5672`；本機用 `localhost:3307` (對外 port 3307，避開 Windows 佔用的 3306)。
 4. **image 請用 1.1 或 latest，不要用 1.0** (1.0 有 yfinance 限流與資料缺漏問題，已淘汰)。
 
-## Table 結構
+### Table 結構
 
 詳見 `crawler/sql/etf_top20_v2_schema.sql`
 
