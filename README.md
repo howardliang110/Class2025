@@ -1,4 +1,4 @@
-# ETF Top 20 v2 — 證交所 + yfinance (免費版)
+# ETF Top 20  — 證交所 + yfinance (免費版)
 > 本專案在老師的 Celery + RabbitMQ + MySQL + Swarm 架構上，新增 ETF Top 20 三大法人爬蟲。
 > 老師的原始範例檔案都保留供參考，但 **ETF 專案實際只用下列標 🟢 的檔案**。
 
