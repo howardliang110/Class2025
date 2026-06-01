@@ -1,0 +1,38 @@
+# 環境設定範本 - 請複製成 local.ini 並填入自己的密碼
+# cp local.ini.example local.ini
+# 然後跑 ENV=DEV python3 genenv.py 產出 .env
+#
+# 注意: local.ini 含密碼, 已在 .gitignore, 不要 commit
+
+# dev 環境 (本機跑 producer 用)
+[DEV]
+WORKER_ACCOUNT = worker
+WORKER_PASSWORD = worker
+RABBITMQ_HOST = 127.0.0.1
+RABBITMQ_PORT = 5672
+MYSQL_HOST = 127.0.0.1
+MYSQL_PORT = 3307
+MYSQL_ACCOUNT = root
+MYSQL_PASSWORD = <YOUR_MYSQL_PASSWORD>
+
+# Docker 環境 (容器內 worker 用)
+[DOCKER]
+WORKER_ACCOUNT = worker
+WORKER_PASSWORD = worker
+RABBITMQ_HOST = rabbitmq
+RABBITMQ_PORT = 5672
+MYSQL_HOST = mysql
+MYSQL_PORT = 3306
+MYSQL_ACCOUNT = root
+MYSQL_PASSWORD = <YOUR_MYSQL_PASSWORD>
+
+# Prod 環境 (上雲時用, 機密資訊不寫死)
+[PRODUCTION]
+WORKER_ACCOUNT = worker
+WORKER_PASSWORD = worker
+RABBITMQ_HOST = rabbitmq
+RABBITMQ_PORT = 5672
+MYSQL_HOST = mysql
+MYSQL_PORT = 3306
+MYSQL_ACCOUNT = root
+MYSQL_PASSWORD = <SET_IN_SECRET_MANAGER>

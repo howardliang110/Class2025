@@ -22,3 +22,6 @@ mysql.yml.swp
 
 # 自動產生的空 DB 檔
 crawler.db
+
+# 本機環境設定 (含密碼, 不進 git)
+local.ini
