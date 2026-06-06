@@ -25,3 +25,6 @@ crawler.db
 
 # 本機環境設定 (含密碼, 不進 git)
 local.ini
+
+# 備份檔
+*.bak
