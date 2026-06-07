@@ -17,7 +17,7 @@ services:
       MYSQL_HOST: mysql
       MYSQL_PORT: 3306
       MYSQL_ACCOUNT: root
-      MYSQL_PASSWORD: Aa1234567890
+      MYSQL_PASSWORD: <YOUR_MYSQL_PASSWORD>
       LC_ALL: C.UTF-8
       LANG: C.UTF-8
     networks:
@@ -33,3 +33,4 @@ networks:
     external: true
   my_attachable_network:
     external: true
+    

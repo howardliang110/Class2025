@@ -89,7 +89,7 @@ docker service ls
 ## 🔍 驗證資料有沒有真的進 MySQL
 
 ### 方法 A：用 phpMyAdmin（網頁，最直覺）
-打開 http://localhost:8080 登入 (root / Aa1234567890 或你自己設的) 左側選 mydb → EtfTop20BuyInstitutionalV2 → Browse
+打開 http://localhost:8080 登入 (root / <你的_MySQL_密碼> 或你自己設的) 左側選 mydb → EtfTop20BuyInstitutionalV2 → Browse
 ### 方法 B：用 Python 查（最方便）
 
 ```python
