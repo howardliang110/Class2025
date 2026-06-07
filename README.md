@@ -164,6 +164,18 @@ docker service update --image howardlch/etf_crawler:1.1 crawler_etf_worker
 | trading_value | 成交金額 (元, 近似) |
 | five_day_trend_pct | 5 日趨勢 (%) |
 | rank_num | 三大法人淨買超名次 |
+| **foreign_buy**  | **外資買進股數**  *(v1.2 新增)* |
+| **foreign_sell** | **外資賣出股數**  *(v1.2 新增)* |
+| **foreign_net**  | **外資買賣超股數**  *(v1.2 新增)* |
+| **trust_buy**    | **投信買進股數**  *(v1.2 新增)* |
+| **trust_sell**   | **投信賣出股數**  *(v1.2 新增)* |
+| **trust_net**    | **投信買賣超股數**  *(v1.2 新增)* |
+| **dealer_buy**   | **自營商買進股數**  *(v1.2 新增)* |
+| **dealer_sell**  | **自營商賣出股數**  *(v1.2 新增)* |
+| **dealer_net**   | **自營商買賣超股數**  *(v1.2 新增)* |
+
+> **v1.2 變更**: 新增 9 個三大法人欄位 (外資/投信/自營商 各別買進/賣出/買賣超),
+> 方便視覺化團隊分組分析。完整流程教學見 [docs/DATAFLOW.md](docs/DATAFLOW.md)。
 --------
 
 

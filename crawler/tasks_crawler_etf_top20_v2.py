@@ -93,29 +93,10 @@ def fetch_twse_t86(target_date: str, retries: int = 3) -> pd.DataFrame:
     return pd.DataFrame()
 
 
-def calculate_net_buy(df: pd.DataFrame) -> pd.DataFrame:
-    if df.empty:
-        return df
-
-    target_col = None
-    for col in df.columns:
-        clean = col.replace(" ", "").replace("　", "")
-        if clean == "三大法人買賣超股數":
-            target_col = col
-            break
-    if target_col is None:
-        for col in df.columns:
-            if "三大法人" in col and "買賣超" in col:
-                target_col = col
-                break
-    if target_col is None:
-        logger.error(f"[calculate_net_buy] 找不到三大法人買賣超欄位: {list(df.columns)}")
-        return pd.DataFrame()
-
-    df = df.copy()
-    df["net_buy"] = (
-        df[target_col]
-        .astype(str)
+def _clean_num(series: pd.Series) -> pd.Series:
+    """T86 數字欄位 (含逗號) 轉 int64"""
+    return (
+        series.astype(str)
         .str.replace(",", "")
         .str.replace(" ", "")
         .pipe(pd.to_numeric, errors="coerce")
@@ -123,15 +104,88 @@ def calculate_net_buy(df: pd.DataFrame) -> pd.DataFrame:
         .astype("int64")
     )
 
-    sid_col = next((c for c in df.columns if "代號" in c or "代碼" in c), None)
-    name_col = next((c for c in df.columns if "名稱" in c), None)
+
+def _find_col(df: pd.DataFrame, *keywords) -> str:
+    """模糊比對找欄位 (避免空白/全形字差異)"""
+    for col in df.columns:
+        clean = col.replace(" ", "").replace("　", "")
+        if all(k in clean for k in keywords):
+            return col
+    return None
+
+
+def calculate_net_buy(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    從 T86 原始 DataFrame 計算三大法人各別買賣量 + 三大法人合計買賣超 (排名用)
+
+    輸出欄位:
+        stock_id, stock_name,
+        foreign_buy, foreign_sell, foreign_net,    (外資 = 外陸資 + 外資自營商)
+        trust_buy, trust_sell, trust_net,          (投信)
+        dealer_buy, dealer_sell, dealer_net,       (自營商 = 自行 + 避險)
+        net_buy                                     (三大法人合計買賣超, 用於排序)
+    """
+    if df.empty:
+        return df
+
+    # 找股票代號、名稱欄位
+    sid_col = _find_col(df, "代號") or _find_col(df, "代碼")
+    name_col = _find_col(df, "名稱")
     if sid_col is None or name_col is None:
         logger.error(f"[calculate_net_buy] 找不到代號/名稱欄位: {list(df.columns)}")
         return pd.DataFrame()
 
-    return df[[sid_col, name_col, "net_buy"]].rename(
-        columns={sid_col: "stock_id", name_col: "stock_name"}
-    )
+    # 找三大法人合計買賣超 (排序用)
+    total_col = _find_col(df, "三大法人", "買賣超")
+    if total_col is None:
+        logger.error(f"[calculate_net_buy] 找不到三大法人買賣超欄位: {list(df.columns)}")
+        return pd.DataFrame()
+
+    # 找各法人欄位
+    # 外資 = 外陸資 (不含外資自營商) + 外資自營商
+    fb1 = _find_col(df, "外陸資買進股數")
+    fs1 = _find_col(df, "外陸資賣出股數")
+    fn1 = _find_col(df, "外陸資買賣超股數")
+    fb2 = _find_col(df, "外資自營商買進股數")
+    fs2 = _find_col(df, "外資自營商賣出股數")
+    fn2 = _find_col(df, "外資自營商買賣超股數")
+
+    tb = _find_col(df, "投信買進股數")
+    ts = _find_col(df, "投信賣出股數")
+    tn = _find_col(df, "投信買賣超股數")
+
+    # 自營商 = 自行 + 避險
+    db1 = _find_col(df, "自營商買進股數", "自行")
+    ds1 = _find_col(df, "自營商賣出股數", "自行")
+    db2 = _find_col(df, "自營商買進股數", "避險")
+    ds2 = _find_col(df, "自營商賣出股數", "避險")
+    dn = _find_col(df, "自營商買賣超股數") and [c for c in df.columns if c.replace(" ", "").replace("　", "") == "自營商買賣超股數"]
+    dn = dn[0] if dn else None
+
+    out = pd.DataFrame()
+    out["stock_id"] = df[sid_col].astype(str).str.strip()
+    out["stock_name"] = df[name_col].astype(str).str.strip()
+
+    # 外資 (合併外陸資 + 外資自營商)
+    out["foreign_buy"] = _clean_num(df[fb1]) + (_clean_num(df[fb2]) if fb2 else 0)
+    out["foreign_sell"] = _clean_num(df[fs1]) + (_clean_num(df[fs2]) if fs2 else 0)
+    out["foreign_net"] = _clean_num(df[fn1]) + (_clean_num(df[fn2]) if fn2 else 0)
+
+    # 投信
+    out["trust_buy"] = _clean_num(df[tb]) if tb else 0
+    out["trust_sell"] = _clean_num(df[ts]) if ts else 0
+    out["trust_net"] = _clean_num(df[tn]) if tn else 0
+
+    # 自營商 (合併自行 + 避險的買進/賣出)
+    out["dealer_buy"] = (_clean_num(df[db1]) if db1 else 0) + (_clean_num(df[db2]) if db2 else 0)
+    out["dealer_sell"] = (_clean_num(df[ds1]) if ds1 else 0) + (_clean_num(df[ds2]) if ds2 else 0)
+    # 自營商買賣超直接用 T86 提供的合計
+    out["dealer_net"] = _clean_num(df[dn]) if dn else 0
+
+    # 三大法人合計 (排序用)
+    out["net_buy"] = _clean_num(df[total_col])
+
+    return out
 
 
 # ============================================================
@@ -298,6 +352,15 @@ def crawler_etf_top20_v2(target_date: str = None):
                 "stock_id": sid,
                 "stock_name": row["stock_name"],
                 "rank_num": int(row["rank_num"]),
+                "foreign_buy": int(row.get("foreign_buy", 0)),
+                "foreign_sell": int(row.get("foreign_sell", 0)),
+                "foreign_net": int(row.get("foreign_net", 0)),
+                "trust_buy": int(row.get("trust_buy", 0)),
+                "trust_sell": int(row.get("trust_sell", 0)),
+                "trust_net": int(row.get("trust_net", 0)),
+                "dealer_buy": int(row.get("dealer_buy", 0)),
+                "dealer_sell": int(row.get("dealer_sell", 0)),
+                "dealer_net": int(row.get("dealer_net", 0)),
                 **metrics,
             }
         )
@@ -325,6 +388,15 @@ def upload_to_mysql_v2(df: pd.DataFrame, target_date: str):
         `trading_value` BIGINT COMMENT '成交金額(元,近似)',
         `five_day_trend_pct` FLOAT COMMENT '5日趨勢(%)',
         `rank_num` INT COMMENT '三大法人淨買超名次',
+        `foreign_buy` BIGINT COMMENT '外資買進股數',
+        `foreign_sell` BIGINT COMMENT '外資賣出股數',
+        `foreign_net` BIGINT COMMENT '外資買賣超股數',
+        `trust_buy` BIGINT COMMENT '投信買進股數',
+        `trust_sell` BIGINT COMMENT '投信賣出股數',
+        `trust_net` BIGINT COMMENT '投信買賣超股數',
+        `dealer_buy` BIGINT COMMENT '自營商買進股數',
+        `dealer_sell` BIGINT COMMENT '自營商賣出股數',
+        `dealer_net` BIGINT COMMENT '自營商買賣超股數',
         `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         UNIQUE KEY `uk_date_stock` (`date`, `stock_id`),
         KEY `idx_date` (`date`),
