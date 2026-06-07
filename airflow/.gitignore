@@ -1,0 +1,18 @@
+*__pycache__/
+.vscode/
+*.pytest_cache/
+*.vscode
+.env
+*.pyc
+*.egg-info
+.cache
+build/
+# 本機環境設定 (含密碼)
+local.ini
+
+# 備份檔
+*.bak
+*.bak2
+
+# 本機含真密碼的 airflow.cfg
+airflow.cfg.local
