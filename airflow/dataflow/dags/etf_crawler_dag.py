@@ -21,7 +21,7 @@ with DAG(
 
     crawl_etf = DockerOperator(
         task_id="crawl_etf_top20",
-        image="howardlch/etf_crawler:1.1",
+        image="howardlch/etf_crawler:1.2",
         command="uv run python -m crawler.producer_crawler_etf_top20_v2",
         network_mode="my_attachable_network",
         environment={
