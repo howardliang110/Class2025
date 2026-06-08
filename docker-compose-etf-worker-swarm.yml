@@ -25,6 +25,8 @@ services:
       - my_attachable_network
     deploy:
       replicas: 1
+      placement:
+        constraints: [node.labels.role==manager]  # ETF Worker 跑在 manager VM
       restart_policy:
         condition: any
 

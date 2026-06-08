@@ -176,6 +176,44 @@ docker service update --image howardlch/etf_crawler:1.1 crawler_etf_worker
 
 > **v1.2 變更**: 新增 9 個三大法人欄位 (外資/投信/自營商 各別買進/賣出/買賣超),
 > 方便視覺化團隊分組分析。完整流程教學見 [docs/DATAFLOW.md](docs/DATAFLOW.md)。
+
+## 🟡 Airflow 自動排程
+
+本專案整合 Airflow 達成「**每天平日 18:00 自動爬 ETF**」, 對應老師架構圖的「排程」區塊。
+
+- 部署檔位置: [`airflow/`](airflow/) 子目錄
+- 完整指南: [docs/AIRFLOW.md](docs/AIRFLOW.md)
+- 詳細部署步驟: [`airflow/SETUP.md`](airflow/SETUP.md)
+- 獨立 repo: https://github.com/howardliang110/dataflow
+
+部署摘要:
+````bash
+cd airflow
+cp local.ini.example local.ini  # 改密碼
+ENV=DOCKER python3 genenv.py
+docker build -f with.env.Dockerfile -t <你的_username>/tibame_dataflow:0.0.1 .
+DOCKER_IMAGE_VERSION=0.0.1 docker stack deploy --resolve-image=never -c docker-compose-airflow.yml airflow
+# 打開 http://127.0.0.1:5000 (admin/admin)
+```
+
+## 🟡 Airflow 自動排程
+
+本專案整合 Airflow 達成「**每天平日 18:00 自動爬 ETF**」, 對應老師架構圖的「排程」區塊。
+
+- 部署檔位置: [`airflow/`](airflow/) 子目錄
+- 完整指南: [docs/AIRFLOW.md](docs/AIRFLOW.md)
+- 詳細部署步驟: [`airflow/SETUP.md`](airflow/SETUP.md)
+- 獨立 repo: https://github.com/howardliang110/dataflow
+
+部署摘要:
+````bash
+cd airflow
+cp local.ini.example local.ini  # 改密碼
+ENV=DOCKER python3 genenv.py
+docker build -f with.env.Dockerfile -t <你的_username>/tibame_dataflow:0.0.1 .
+DOCKER_IMAGE_VERSION=0.0.1 docker stack deploy --resolve-image=never -c docker-compose-airflow.yml airflow
+# 打開 http://127.0.0.1:5000 (admin/admin)
+```
 --------
 
 

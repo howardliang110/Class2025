@@ -26,6 +26,12 @@ services:
           # 讓資料不會因為, container close or update, 而遺失
       networks:
           - my_attachable_network
+      deploy:
+        replicas: 1
+        placement:
+          constraints: [node.labels.role==mysql]
+        restart_policy:
+          condition: any
 
   phpmyadmin:
       # 升級到 5.2, 支援 amd64 / arm64 (Mac M1/M2 適用)
