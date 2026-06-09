@@ -2,7 +2,7 @@ version: "3.8"
 
 services:
   etf_worker:
-    image: howardlch/etf_crawler:1.1
+    image: howardlch/etf_crawler:1.2
     command: >
       uv run celery -A crawler.worker worker
       --loglevel=info
@@ -17,7 +17,7 @@ services:
       MYSQL_HOST: mysql
       MYSQL_PORT: 3306
       MYSQL_ACCOUNT: root
-      MYSQL_PASSWORD: <YOUR_MYSQL_PASSWORD>
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
       LC_ALL: C.UTF-8
       LANG: C.UTF-8
     networks:
