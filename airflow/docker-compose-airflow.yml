@@ -74,8 +74,6 @@ services:
       replicas: 1
       placement:
         constraints: [node.labels.airflow==true]
-    volumes:
-      - /home/howard/dataflow/dataflow/dags:/dataflow/dataflow/dags
     networks:
       - my_attachable_network
 
@@ -108,7 +106,6 @@ services:
       - TZ=Asia/Taipei
     # 將容器內的 docker 與容器外的 docker 做連結
     volumes:
-      - /home/howard/dataflow/dataflow/dags:/dataflow/dataflow/dags
       - /var/run/docker.sock:/var/run/docker.sock
     deploy:
       mode: replicated
@@ -124,7 +121,6 @@ services:
     restart: always
     # 將容器內的 docker 與容器外的 docker 做連結
     volumes:
-      - /home/howard/dataflow/dataflow/dags:/dataflow/dataflow/dags
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       - scheduler
