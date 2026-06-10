@@ -279,7 +279,11 @@ def compute_metrics(price_df: pd.DataFrame, target_date: str):
         five_day_trend = None
 
     volume_shares = int(today["Volume"]) if pd.notna(today["Volume"]) else 0
-    trading_value = int(volume_shares * float(today["Close"]))
+    trading_value = (
+        int(volume_shares * float(today["Close"]))
+        if pd.notna(today["Close"])
+        else None
+    )
 
     return {
         "open_price": round(float(today["Open"]), 4) if pd.notna(today["Open"]) else None,
