@@ -50,7 +50,7 @@
 |------|------|
 | `Dockerfile` | build ETF worker image (基於老師 Ubuntu+uv base,加 ETF code + yfinance) |
 | `.dockerignore` | build 時排除 .git/.venv/.env |
-| `docker-compose-etf-worker-swarm.yml` | **部署 ETF worker 用這個** (image: `howardlch/etf_crawler:1.2`, concurrency=1) |
+| `docker-compose-etf-worker-swarm.yml` | **部署 ETF worker 用這個** (image: `howardlch/etf_crawler:1.3`, concurrency=1) |
 | `crawler/tasks_crawler_etf_top20_v2.py` | ETF 爬蟲核心 (證交所 T86 + yfinance 批次下載) |
 | `crawler/producer_crawler_etf_top20_v2.py` | 派送單日任務 (寫 DB) |
 | `crawler/producer_crawler_etf_top20_v2_print.py` | 派送單日任務 (只印,測試用) |
@@ -87,7 +87,7 @@
 build 容器時,版控紀錄 (.git)、虛擬環境 (.venv)、密碼檔 (.env) 等不該被打包進去。這個清單讓容器保持輕巧,也避免密碼外洩到 image 裡。
 
 **`docker-compose-etf-worker-swarm.yml` — 啟動 worker 容器的部署說明書 (最重要)。**
-定義 worker 容器如何啟動:用哪個 image (`howardlch/etf_crawler:1.2`)、啟動指令 (Celery worker + `--concurrency=1`)、連到哪個資料庫與訊息佇列。MySQL 密碼用 `${MYSQL_PASSWORD}` 環境變數讀,不寫死。部署就是用這個檔案。
+定義 worker 容器如何啟動:用哪個 image (`howardlch/etf_crawler:1.3`)、啟動指令 (Celery worker + `--concurrency=1`)、連到哪個資料庫與訊息佇列。MySQL 密碼用 `${MYSQL_PASSWORD}` 環境變數讀,不寫死。部署就是用這個檔案。
 
 ### 爬蟲程式
 
@@ -243,8 +243,8 @@ docker run --rm -i \
 | `Unknown database 'airflow'` | MySQL 重建後沒有 airflow db | 手動 `CREATE DATABASE airflow` |
 | service 卡 0/1 "no suitable node" | node label 沒設 | `docker node update --label-add` |
 | `pull access denied` | image 沒 push 到 Docker Hub | 本機 `docker push howardlch/<image>:<tag>` |
-
-更多踩雷與解法見 `docs/AIRFLOW.md` 跟本機個人準備材料。
+| `cannot convert float NaN to integer` | yfinance 某些 ETF 的 Close 是 NaN | `compute_metrics` 加 `pd.notna(Close)` 容錯判斷 (v1.3 修正) |
+| commit 後 yml 改動「消失」、git 看不到改 | 檔案被 `git update-index --skip-worktree` 鎖住 | 跑 `git update-index --no-skip-worktree <file>` 解鎖 |
 
 ### 對外服務 (firewall 開放後可用)
 
@@ -264,15 +264,16 @@ docker run --rm -i \
 
 ## 🐳 Docker Image 版本
 
-- **`howardlch/etf_crawler:1.2`** = `latest`:目前正式版 (含三大法人 9 個欄位)
-- `howardlch/etf_crawler:1.1`:前一版 (只有 1 個 `net` 欄位)
+- - **`howardlch/etf_crawler:1.3`** = `latest`:目前正式版 (修正 NaN edge case)
+- `howardlch/etf_crawler:1.2`:加入三大法人 9 個欄位
+- `howardlch/etf_crawler:1.1`:三大法人只有 1 個 `net` 欄位
 - `howardlch/tibame_dataflow:0.0.1`:Airflow image (含 DAG 跟環境)
 
 重新 build / 更新 image:
 ```bash
-docker build -t howardlch/etf_crawler:1.2 .
-docker push howardlch/etf_crawler:1.2
-docker service update --image howardlch/etf_crawler:1.2 crawler_etf_worker
+docker build -t howardlch/etf_crawler:1.3 .
+docker push howardlch/etf_crawler:1.3
+docker service update --image howardlch/etf_crawler:1.3 crawler_etf_worker
 ```
 
 ---
