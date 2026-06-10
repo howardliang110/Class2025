@@ -2,7 +2,7 @@ version: "3.8"
 
 services:
   etf_worker:
-    image: howardlch/etf_crawler:1.2
+    image: howardlch/etf_crawler:1.3
     command: >
       uv run celery -A crawler.worker worker
       --loglevel=info

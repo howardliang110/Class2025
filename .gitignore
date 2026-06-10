@@ -28,3 +28,4 @@ local.ini
 
 # 備份檔
 *.bak
+etf_dump.sql
