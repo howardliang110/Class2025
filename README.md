@@ -1,17 +1,18 @@
-# ETF Top 20  — 證交所 + yfinance (免費版)
-> 本專案在老師的 Celery + RabbitMQ + MySQL + Swarm 架構上，新增 ETF Top 20 三大法人爬蟲。
-> 老師的原始範例檔案都保留供參考，但 **ETF 專案實際只用下列標 🟢 的檔案**。
+# ETF Top 20 — 證交所 + yfinance (免費版)
+
+> 本專案在老師的 Celery + RabbitMQ + MySQL + Swarm 架構上,新增 **ETF Top 20 三大法人爬蟲** + **Airflow 自動排程** + **GCP 雲端部署**。
+> 老師的原始範例檔案都保留供參考,但 **ETF 專案實際只用下列標 🟢 的檔案**。
 
 ---
 
 ## 📖 這個專案在做什麼 (新手先看這裡)
 
-本專案每天自動完成以下流程：
+本專案每天自動完成以下流程:
 
 1. 從**證券交易所**抓取「三大法人 (外資、投信、自營商) 買賣超的 ETF 資料」
 2. 挑出買超最多的**前 20 名 ETF**
 3. 從 **Yahoo 股市 (yfinance)** 抓這 20 檔的股價 (開盤、收盤、成交量等)
-4. 把結果**存進 MySQL 資料庫**，供後續視覺化、分析使用
+4. 把結果**存進 MySQL 資料庫**,供後續視覺化、分析使用
 
 ### 用餐廳廚房比喻理解架構
 
@@ -19,11 +20,27 @@
 |----------|------|------|
 | Producer (派工程式) | 點餐櫃台 | 把「要爬哪天的資料」寫成任務單 |
 | RabbitMQ (訊息佇列) | 廚房點單夾 | 任務單一張張掛著排隊 |
-| Worker (執行程式) | 廚師 | 從點單夾拿單，實際去爬資料 |
+| Worker (執行程式) | 廚師 | 從點單夾拿單,實際去爬資料 |
 | MySQL (資料庫) | 倉庫 | 把爬好的資料存起來 |
-| Docker (容器) | 貨櫃 | 把廚師和工具打包，搬到哪都能跑 |
+| Airflow (排程器) | 鬧鐘 + 派工長 | 每天定時自動派任務 |
+| Docker (容器) | 貨櫃 | 把廚師和工具打包,搬到哪都能跑 |
 
-資料流：**Producer 派單 → RabbitMQ 排隊 → Worker 執行爬蟲 → 存進 MySQL**
+**資料流**:Airflow 觸發 → Producer 派單 → RabbitMQ 排隊 → Worker 執行爬蟲 → 存進 MySQL
+
+---
+
+## 🗺️ 對照老師架構圖,本專案做了哪幾塊
+
+| 架構區塊 | 完成狀態 | 本專案實作 |
+|---------|---------|-----------|
+| **排程** | ✅ | Apache Airflow (對應 Cloud Composer / APScheduler) |
+| **資料收集** | ✅ | RabbitMQ + Celery + ETF 爬蟲 + Flower 監控 |
+| **資料儲存** | ✅ | MySQL (`EtfTop20BuyInstitutionalV2`, 19 欄位含三大法人) |
+| **雲端** | ✅ | GCP Compute Engine (4 台 VM, Docker Swarm 叢集) |
+| **資料讀取** | 🟡 | FastAPI (隊友 A 負責,本 repo 提供 DB 連線資訊) |
+| **視覺化** | 🟡 | Redash / Looker (隊友 B 負責,可直接讀本 DB) |
+| **BigQuery / GCS** | ⚪ | 未做 (本專案規模 MySQL 足夠,未來擴展用) |
+| **Secret Manager** | ⚪ | 未做 (用 `.env` + `.gitignore` + skip-worktree 替代) |
 
 ---
 
@@ -31,170 +48,274 @@
 
 | 檔案 | 用途 |
 |------|------|
-| `Dockerfile` | build ETF worker image (基於老師 Ubuntu+uv base, 加 ETF code + yfinance) |
+| `Dockerfile` | build ETF worker image (基於老師 Ubuntu+uv base,加 ETF code + yfinance) |
 | `.dockerignore` | build 時排除 .git/.venv/.env |
-| `docker-compose-etf-worker-swarm.yml` | **部署 ETF worker 用這個** (image: howardlch/etf_crawler:1.1, concurrency=1) |
+| `docker-compose-etf-worker-swarm.yml` | **部署 ETF worker 用這個** (image: `howardlch/etf_crawler:1.2`, concurrency=1) |
 | `crawler/tasks_crawler_etf_top20_v2.py` | ETF 爬蟲核心 (證交所 T86 + yfinance 批次下載) |
 | `crawler/producer_crawler_etf_top20_v2.py` | 派送單日任務 (寫 DB) |
-| `crawler/producer_crawler_etf_top20_v2_print.py` | 派送單日任務 (只印, 測試用) |
+| `crawler/producer_crawler_etf_top20_v2_print.py` | 派送單日任務 (只印,測試用) |
 | `crawler/producer_crawler_etf_top20_v2_range.py` | 派送一段日期範圍 (自動跳週末) |
 | `crawler/sql/etf_top20_v2_schema.sql` | DB schema + Redash 查詢範例 |
-| `crawler/airflow_dags/etf_top20_dag.py` | Airflow DAG 範例 |
+| `airflow/` | **Airflow 自動排程模組** (整合到本 repo 的子目錄) |
 
-### 🔵 基礎服務 (必要, 老師提供)
+### 🔵 基礎服務 (必要,老師提供)
 
 | 檔案 | 用途 |
 |------|------|
-| `mysql.yml` | MySQL 部署 (port 3307 對外, 避開 Windows 3306) |
-| `rabbitmq.yml` | RabbitMQ 部署 |
-| `crawler/__init__.py` `config.py` `worker.py` | Celery 核心 (config 已改成自動讀 .env) |
+| `mysql.yml` | MySQL 部署 (port 3307 對外,避開 Windows 3306) |
+| `rabbitmq-network.yml` | RabbitMQ 部署 (供 ETF 跟 Airflow 共用) |
+| `crawler/__init__.py` `config.py` `worker.py` | Celery 核心 (config 已改成自動讀 `.env`) |
 | `docker-compose-redash-local.yml` | Redash 視覺化 (給視覺化團隊) |
 
 ### ⚪ 老師原始範例 (參考用, ETF 專案不直接使用)
 
 `docker-compose-worker*.yml`、`docker-compose-producer*.yml`、`docker-compose-scheduler*.yml`,
-以及 `crawler/` 下的 finmind / margin / bigquery 等檔案，都是老師課程的原始範例，保留供學習參考。
+以及 `crawler/` 下的 finmind / margin / bigquery 等檔案,都是老師課程的原始範例,保留供學習參考。
 
 ---
 
-## 📂 核心檔案詳解 
+## 📂 核心檔案詳解
 
-上面表格是一句話速查，這裡是每個核心檔案的完整白話說明。
+上面表格是一句話速查,這裡是每個核心檔案的完整白話說明。
 
 ### 部署檔案
 
 **`Dockerfile` — 打造容器的施工圖。**
-告訴 Docker 如何一步步建立執行環境：安裝 Python 3.11、安裝 uv 套件管理工具、安裝相依套件 (含 yfinance)、複製爬蟲程式進去。依照這張施工圖，任何電腦都能 build 出完全相同的環境。本專案基於 Ubuntu 22.04，在老師的 base 上加入 ETF 程式與 yfinance。
+告訴 Docker 如何一步步建立執行環境:安裝 Python 3.11、安裝 uv 套件管理工具、安裝相依套件 (含 yfinance)、複製爬蟲程式進去。依照這張施工圖,任何電腦都能 build 出完全相同的環境。本專案基於 Ubuntu 22.04,在老師的 base 上加入 ETF 程式與 yfinance。
 
 **`.dockerignore` — 打包時要排除的清單。**
-build 容器時，版控紀錄 (.git)、虛擬環境 (.venv)、密碼檔 (.env) 等不該被打包進去。這個清單讓容器保持輕巧，也避免密碼外洩到 image 裡。
+build 容器時,版控紀錄 (.git)、虛擬環境 (.venv)、密碼檔 (.env) 等不該被打包進去。這個清單讓容器保持輕巧,也避免密碼外洩到 image 裡。
 
 **`docker-compose-etf-worker-swarm.yml` — 啟動 worker 容器的部署說明書 (最重要)。**
-定義 worker 容器如何啟動：用哪個 image (`howardlch/etf_crawler:1.1`)、啟動指令 (Celery worker + `--concurrency=1`)、連到哪個資料庫與訊息佇列。部署就是用這個檔案。
+定義 worker 容器如何啟動:用哪個 image (`howardlch/etf_crawler:1.2`)、啟動指令 (Celery worker + `--concurrency=1`)、連到哪個資料庫與訊息佇列。MySQL 密碼用 `${MYSQL_PASSWORD}` 環境變數讀,不寫死。部署就是用這個檔案。
 
 ### 爬蟲程式
 
-**`crawler/tasks_crawler_etf_top20_v2.py` — 爬蟲核心邏輯，專案心臟。**
-完整流程：(1) 向證交所 T86 抓三大法人資料 → (2) 篩 ETF、排名、取前 20 → (3) 一次批次向 Yahoo 抓 20 檔股價 → (4) 算 5 日趨勢 → (5) 寫入 MySQL。兩個關鍵設計：批次下載降低被 Yahoo 限流機率；某檔股價抓不到時仍保留排名 (價格留空)，確保前 20 名完整。
+**`crawler/tasks_crawler_etf_top20_v2.py` — 爬蟲核心邏輯,專案心臟。**
+完整流程:(1) 向證交所 T86 抓三大法人資料 → (2) 篩 ETF、排名、取前 20 → (3) 一次批次向 Yahoo 抓 20 檔股價 → (4) 算 5 日趨勢 → (5) 寫入 MySQL。兩個關鍵設計:批次下載降低被 Yahoo 限流機率;某檔股價抓不到時仍保留排名 (價格留空),確保前 20 名完整。
 
 **`crawler/producer_crawler_etf_top20_v2.py` — 派送單日任務 (寫入 DB)。**
 派一張任務單讓 worker 爬「指定某天」並存進資料庫。不給日期則預設抓「昨天」。
 
-**`crawler/producer_crawler_etf_top20_v2_print.py` — 測試用，只印不寫 DB。**
-只把結果印在畫面上，不寫資料庫，用來確認爬出來的資料是否正確，不弄髒資料庫。
+**`crawler/producer_crawler_etf_top20_v2_print.py` — 測試用,只印不寫 DB。**
+只把結果印在畫面上,不寫資料庫,用來確認爬出來的資料是否正確,不弄髒資料庫。
 
 **`crawler/producer_crawler_etf_top20_v2_range.py` — 派送一段日期範圍。**
-給定起訖日期，自動為每個交易日各派一張單，自動跳過週末。適合一次補齊大量歷史資料。
+給定起訖日期,自動為每個交易日各派一張單,自動跳過週末。適合一次補齊大量歷史資料。
 
 ### 設定檔
 
 **`crawler/config.py` — 集中管理連線設定。**
-資料庫帳密、RabbitMQ 位置等都從這裡讀。已改成自動讀取根目錄的 `.env`，密碼不寫死在程式裡。
+資料庫帳密、RabbitMQ 位置等都從這裡讀。已改成自動讀取根目錄的 `.env`,密碼不寫死在程式裡。
 
 **`crawler/worker.py` — 定義並啟動 Celery worker。**
-註冊 worker 可執行哪些任務，啟動時連上 RabbitMQ 等待接單。
+註冊 worker 可執行哪些任務,啟動時連上 RabbitMQ 等待接單。
 
 ### 下游交付檔案
 
 **`crawler/sql/etf_top20_v2_schema.sql` — 資料表藍圖 + 查詢範例。**
-資料表完整結構定義，附數個現成 SQL 查詢，視覺化同學可直接取用。
+資料表完整結構定義,附數個現成 SQL 查詢,視覺化同學可直接取用。
 
-**`crawler/airflow_dags/etf_top20_dag.py` — 自動排程範本。**
-給 Airflow 負責人參考，照此設定可讓爬蟲每日自動執行。
+**`airflow/` 子目錄 — Airflow 自動排程模組。**
+完整 Airflow 部署檔 + DAG,讓爬蟲每日自動執行。詳見 `docs/AIRFLOW.md` 和 `airflow/SETUP.md`。
 
 ---
 
-## 🚀 ETF 專案快速啟動
+## 🚀 ETF 專案快速啟動 (本機開發)
 
 ```bash
 # 0. 確認 Docker Desktop 開著, swarm 已 init
 docker swarm init   # 若還沒 init
 
-# 1. 部署基礎服務
-docker stack deploy -c mysql.yml mysql
-docker stack deploy -c rabbitmq.yml rabbitmq
+# 1. 環境設定
+cp local.ini.example local.ini
+# 編輯 local.ini, 把 <YOUR_MYSQL_PASSWORD> 改成你的真密碼
+ENV=DEV python3 genenv.py   # 產出 .env
 
-# 2. 部署 ETF worker (用我們的 image, 從 Docker Hub 拉)
-docker stack deploy --with-registry-auth -c docker-compose-etf-worker-swarm.yml crawler
-
-# 3. 確認服務都起來
-docker service ls
-
-# 4. 安裝本機 Python 環境 (派送任務用)
+# 2. 安裝 Python 環境
 uv sync
 
-# 5. 派送任務
+# 3. 部署基礎服務 (MySQL + RabbitMQ)
+docker stack deploy -c mysql.yml mysql
+docker stack deploy -c rabbitmq-network.yml rabbitmq
+
+# 4. 部署 ETF worker (從 Docker Hub 拉 image)
+docker stack deploy --with-registry-auth -c docker-compose-etf-worker-swarm.yml crawler
+
+# 5. 確認服務都起來
+docker service ls
+
+# 6. 派送任務
 .venv/bin/python -m crawler.producer_crawler_etf_top20_v2 2026-05-20          # 單日
 .venv/bin/python -m crawler.producer_crawler_etf_top20_v2_range 2026-05-01 2026-05-20  # 區間
 
-# 6. 看結果 (phpMyAdmin http://localhost:8080 或直接查)
+# 7. 看結果 (phpMyAdmin http://localhost:8080 或直接查)
 #    MySQL: host=mysql:3306 (容器內) / localhost:3307 (外部), db=mydb, user=root
 ```
 
+---
+
+## 🌐 雲端部署 (GCP)
+
+本專案另在 **GCP Compute Engine 4 台 VM** 上做了正式環境部署,讓爬蟲 24/7 跑著、自動排程、團隊可遠端使用。
+
+### VM 架構
+
+| VM 名稱 | 內部 IP | 角色 | 跑什麼 service |
+|---------|--------|------|---------------|
+| `manager` | 10.140.0.2 | Swarm Leader + 爬蟲 worker | `crawler_etf_worker` |
+| `airflow` | 10.140.0.5 | Airflow 排程 | `airflow_*` (5 個 service) |
+| `mysql` | 10.140.0.3 | 資料庫 | `mysql_mysql`, `mysql_phpmyadmin` |
+| `rebbitmq` | 10.140.0.4 | 訊息佇列 | `rabbitmq_rabbitmq`, `rabbitmq_flower` |
+
+### Swarm 叢集建立流程
+
+```bash
+# Step 1: 在 manager VM init swarm
+docker swarm init --advertise-addr 10.140.0.2
+
+# Step 2: 其他 3 台 VM 各執行 join 指令 (token 來自 step 1)
+sudo docker swarm join --token SWMTKN-1-xxx 10.140.0.2:2377
+
+# Step 3: 在 manager 建跨 stack 通訊網路
+docker network create --scope=swarm --driver=overlay --attachable my_attachable_network
+docker network create --scope=swarm --driver=overlay --attachable my_swarm_network
+
+# Step 4: 設 node label (給 yml 的 placement constraint 用)
+docker node update --label-add role=manager --label-add worker=true manager
+docker node update --label-add role=airflow --label-add airflow=true --label-add worker=true airflow
+docker node update --label-add role=mysql mysql
+docker node update --label-add role=rabbitmq rebbitmq
+
+# Step 5: 在 manager 拉 repo + 設密碼
+cd ~ && git clone https://github.com/howardliang110/Class2025
+cd Class2025
+cp local.ini.example local.ini
+sed -i 's|<YOUR_MYSQL_PASSWORD>|Aa1234567890|g' local.ini
+ENV=DOCKER python3 genenv.py
+
+# Step 6: 部署 4 個 stack (重要: 載入 .env 環境變數)
+set -a; source .env; set +a   # 讓 ${MYSQL_PASSWORD} 能被 deploy 讀到
+docker stack deploy --with-registry-auth -c mysql.yml mysql
+docker stack deploy --with-registry-auth -c rabbitmq-network.yml rabbitmq
+docker stack deploy --with-registry-auth -c docker-compose-etf-worker-swarm.yml crawler
+cd airflow
+DOCKER_IMAGE_VERSION=0.0.1 docker stack deploy --with-registry-auth -c docker-compose-airflow.yml airflow
+
+# Step 7: 建 Airflow 元資料 database
+docker run --rm \
+  --network my_attachable_network \
+  mysql:8.0 \
+  mysql -hmysql -uroot -pAa1234567890 -e "
+CREATE DATABASE IF NOT EXISTS airflow
+  CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+"
+
+# Step 8: 從本機 dump 歷史資料上傳到雲端
+# (在本機跑)
+docker exec $(docker ps -q -f name=mysql_mysql) \
+  mysqldump -uroot -pAa1234567890 \
+  --single-transaction --no-create-info --insert-ignore \
+  mydb EtfTop20BuyInstitutionalV2 > etf_dump.sql
+
+# 透過 GCP Console SSH 上傳 etf_dump.sql 到 manager VM
+
+# 在 manager 匯入
+docker run --rm -i \
+  --network my_attachable_network \
+  mysql:8.0 \
+  mysql -hmysql -uroot -pAa1234567890 mydb \
+  < crawler/sql/etf_top20_v2_schema.sql
+
+docker run --rm -i \
+  --network my_attachable_network \
+  mysql:8.0 \
+  mysql -hmysql -uroot -pAa1234567890 mydb \
+  < ~/etf_dump.sql
+```
+
+### 雲端踩雷重點
+
+| 問題 | 原因 | 解法 |
+|------|------|------|
+| `docker stack deploy` 後 `${MYSQL_PASSWORD}` 變空 | stack deploy 不自動讀 `.env` | 先 `set -a; source .env; set +a` 再 deploy |
+| Docker daemon 重啟後 swarm 重置 | 沒設開機自啟 | `sudo systemctl enable docker` |
+| `Unknown database 'airflow'` | MySQL 重建後沒有 airflow db | 手動 `CREATE DATABASE airflow` |
+| service 卡 0/1 "no suitable node" | node label 沒設 | `docker node update --label-add` |
+| `pull access denied` | image 沒 push 到 Docker Hub | 本機 `docker push howardlch/<image>:<tag>` |
+
+更多踩雷與解法見 `docs/AIRFLOW.md` 跟本機個人準備材料。
+
+### 對外服務 (firewall 開放後可用)
+
+| 服務 | URL | 帳密 |
+|------|-----|------|
+| Airflow Web UI | http://35.221.222.213:5000 | admin / admin |
+| phpMyAdmin | http://35.221.222.213:8080 | root / Aa1234567890 |
+| RabbitMQ Management | http://35.221.222.213:15672 | worker / worker |
+| Flower (RabbitMQ Celery) | http://35.221.222.213:5555 | - |
+| Flower (Airflow Celery) | http://35.221.222.213:5556 | - |
+| MySQL (給 API/視覺化) | 35.221.222.213:3306 | root / Aa1234567890 |
+
+> 註: Swarm routing mesh 機制讓任何 VM 的外部 IP + port 都能連到對應 service,
+> 不需記哪台 VM 跑什麼。
+
+---
+
 ## 🐳 Docker Image 版本
 
-- **`howardlch/etf_crawler:1.1`** = `latest`：正式版 (批次下載 + 保留 rank, concurrency=1)
+- **`howardlch/etf_crawler:1.2`** = `latest`:目前正式版 (含三大法人 9 個欄位)
+- `howardlch/etf_crawler:1.1`:前一版 (只有 1 個 `net` 欄位)
+- `howardlch/tibame_dataflow:0.0.1`:Airflow image (含 DAG 跟環境)
 
 重新 build / 更新 image:
 ```bash
-docker build -t howardlch/etf_crawler:1.1 .
-docker push howardlch/etf_crawler:1.1
-docker service update --image howardlch/etf_crawler:1.1 crawler_etf_worker
+docker build -t howardlch/etf_crawler:1.2 .
+docker push howardlch/etf_crawler:1.2
+docker service update --image howardlch/etf_crawler:1.2 crawler_etf_worker
 ```
+
+---
 
 ## ⚠️ 重要設定 / 新手注意事項
 
 1. **務必先啟動 Docker Desktop。** 否則所有 docker 指令都會失敗 (確認右下角鯨魚圖示是綠的)。
-2. **worker 必須用 `--concurrency=1`** (compose 已設)，避免多任務並發寫入 MySQL 造成資料缺漏，請勿改大。
-3. **容器內外連線位置不同：** 容器內用服務名 `mysql:3306`、`rabbitmq:5672`；本機用 `localhost:3307` (對外 port 3307，避開 Windows 佔用的 3306)。
-4. **image 請用 1.1 或 latest，不要用 1.0** (1.0 有 yfinance 限流與資料缺漏問題，已淘汰)。
+2. **worker 必須用 `--concurrency=1`** (compose 已設),避免多任務並發寫入 MySQL 造成資料缺漏,請勿改大。
+3. **容器內外連線位置不同:** 容器內用服務名 `mysql:3306`、`rabbitmq:5672`;本機用 `localhost:3307` (對外 port 3307,避開 Windows 佔用的 3306)。
+4. **image 請用 1.2 或 latest** (1.0 / 1.1 已淘汰)。
+5. **雲端 deploy 前先載 `.env`**:`set -a; source .env; set +a` 才不會讓 `${MYSQL_PASSWORD}` 變空。
 
-## Table 結構
+---
+
+## 📋 Table 結構
 
 詳見 `crawler/sql/etf_top20_v2_schema.sql`
 
 | 欄位 | 說明 |
 |------|------|
-| date | 交易日期 |
-| stock_id | ETF 代號 |
-| stock_name | ETF 中文名稱 |
-| open_price | 開盤價 |
-| close_price | 收盤價 |
-| trading_volume_shares | 成交股數 |
-| trading_value | 成交金額 (元, 近似) |
-| five_day_trend_pct | 5 日趨勢 (%) |
-| rank_num | 三大法人淨買超名次 |
-| **foreign_buy**  | **外資買進股數**  *(v1.2 新增)* |
-| **foreign_sell** | **外資賣出股數**  *(v1.2 新增)* |
-| **foreign_net**  | **外資買賣超股數**  *(v1.2 新增)* |
-| **trust_buy**    | **投信買進股數**  *(v1.2 新增)* |
-| **trust_sell**   | **投信賣出股數**  *(v1.2 新增)* |
-| **trust_net**    | **投信買賣超股數**  *(v1.2 新增)* |
-| **dealer_buy**   | **自營商買進股數**  *(v1.2 新增)* |
-| **dealer_sell**  | **自營商賣出股數**  *(v1.2 新增)* |
-| **dealer_net**   | **自營商買賣超股數**  *(v1.2 新增)* |
+| `date` | 交易日期 |
+| `stock_id` | ETF 代號 |
+| `stock_name` | ETF 中文名稱 |
+| `open_price` | 開盤價 |
+| `close_price` | 收盤價 |
+| `trading_volume_shares` | 成交股數 |
+| `trading_value` | 成交金額 (元, 近似) |
+| `five_day_trend_pct` | 5 日趨勢 (%) |
+| `rank_num` | 三大法人淨買超名次 |
+| **`foreign_buy`**  | **外資買進股數**  *(v1.2 新增)* |
+| **`foreign_sell`** | **外資賣出股數**  *(v1.2 新增)* |
+| **`foreign_net`**  | **外資買賣超股數**  *(v1.2 新增)* |
+| **`trust_buy`**    | **投信買進股數**  *(v1.2 新增)* |
+| **`trust_sell`**   | **投信賣出股數**  *(v1.2 新增)* |
+| **`trust_net`**    | **投信買賣超股數**  *(v1.2 新增)* |
+| **`dealer_buy`**   | **自營商買進股數**  *(v1.2 新增)* |
+| **`dealer_sell`**  | **自營商賣出股數**  *(v1.2 新增)* |
+| **`dealer_net`**   | **自營商買賣超股數**  *(v1.2 新增)* |
 
 > **v1.2 變更**: 新增 9 個三大法人欄位 (外資/投信/自營商 各別買進/賣出/買賣超),
 > 方便視覺化團隊分組分析。完整流程教學見 [docs/DATAFLOW.md](docs/DATAFLOW.md)。
 
-## 🟡 Airflow 自動排程
-
-本專案整合 Airflow 達成「**每天平日 18:00 自動爬 ETF**」, 對應老師架構圖的「排程」區塊。
-
-- 部署檔位置: [`airflow/`](airflow/) 子目錄
-- 完整指南: [docs/AIRFLOW.md](docs/AIRFLOW.md)
-- 詳細部署步驟: [`airflow/SETUP.md`](airflow/SETUP.md)
-- 獨立 repo: https://github.com/howardliang110/dataflow
-
-部署摘要:
-````bash
-cd airflow
-cp local.ini.example local.ini  # 改密碼
-ENV=DOCKER python3 genenv.py
-docker build -f with.env.Dockerfile -t <你的_username>/tibame_dataflow:0.0.1 .
-DOCKER_IMAGE_VERSION=0.0.1 docker stack deploy --resolve-image=never -c docker-compose-airflow.yml airflow
-# 打開 http://127.0.0.1:5000 (admin/admin)
-```
+---
 
 ## 🟡 Airflow 自動排程
 
@@ -205,68 +326,119 @@ DOCKER_IMAGE_VERSION=0.0.1 docker stack deploy --resolve-image=never -c docker-c
 - 詳細部署步驟: [`airflow/SETUP.md`](airflow/SETUP.md)
 - 獨立 repo: https://github.com/howardliang110/dataflow
 
-部署摘要:
-````bash
+本機部署摘要:
+```bash
 cd airflow
 cp local.ini.example local.ini  # 改密碼
 ENV=DOCKER python3 genenv.py
-docker build -f with.env.Dockerfile -t <你的_username>/tibame_dataflow:0.0.1 .
+docker build -f with.env.Dockerfile -t howardlch/tibame_dataflow:0.0.1 .
 DOCKER_IMAGE_VERSION=0.0.1 docker stack deploy --resolve-image=never -c docker-compose-airflow.yml airflow
 # 打開 http://127.0.0.1:5000 (admin/admin)
 ```
---------
 
+---
+
+## 🤝 給隊友的連線資訊
+
+雲端 MySQL 已就緒, 視覺化 / API 團隊可以開始接入:
+
+```
+Host:     雲端 VM 外部 IP (待 firewall 開 3306, 詳見「對外服務」表格)
+          或 mysql (swarm 內部 service name, 從雲端 VM 連用)
+Port:     3306
+Database: mydb
+Table:    EtfTop20BuyInstitutionalV2
+User:     root
+Password: Aa1234567890
+Charset:  utf8mb4
+```
+
+**Python 連線範例**:
+```python
+import pymysql
+
+conn = pymysql.connect(
+    host='mysql',  # 雲端 VM 內用 service name; 本機開發用外部 IP
+    port=3306,
+    user='root',
+    password='Aa1234567890',
+    database='mydb',
+    charset='utf8mb4'
+)
+cursor = conn.cursor(pymysql.cursors.DictCursor)
+cursor.execute("SELECT * FROM EtfTop20BuyInstitutionalV2 LIMIT 5")
+print(cursor.fetchall())
+```
+
+**目前資料概況**: 2000 筆 / 100 個交易日 / 2026-01-02 ~ 2026-06-05。
+Airflow 每天平日 18:00 自動更新。
+
+---
+
+## 🚀 未來改進方向
+
+短期:
+- [ ] 整合 Google Secret Manager 取代 `.env` (生產級密碼管理)
+- [ ] 加 Alert 機制 (爬蟲失敗時 Slack/Email 通知)
+- [ ] 補上其他法人類型 (期貨/選擇權)
+
+中期:
+- [ ] 擴展到上市/上櫃完整股票 (~1700 檔)
+- [ ] 加 BigQuery 做長期歷史分析
+- [ ] CI/CD (push 後自動 build + deploy)
+
+---
 
 <br>
 
 ---
 ---
 
-# 📚 附錄：老師原始架構說明 (crawler 教學專案)
+# 📚 附錄:老師原始架構說明 (crawler 教學專案)
 
-> 以下為本專案所基於的老師原始 README，完整保留作為架構背景與操作指令參考。
-> 我們的 ETF 專案沿用這套 Celery + RabbitMQ + MySQL + Swarm 架構，在其上新增 ETF Top 20 爬蟲模組。
+> 以下為本專案所基於的老師原始 README,完整保留作為架構背景與操作指令參考。
+> 我們的 ETF 專案沿用這套 Celery + RabbitMQ + MySQL + Swarm 架構,在其上新增 ETF Top 20 爬蟲模組。
 
-這是一個「台股資料爬蟲系統」的教學專案，帶你從零學會如何用工業界常見的架構，定期自動抓取股票資料並寫入資料庫。
+這是一個「台股資料爬蟲系統」的教學專案,帶你從零學會如何用工業界常見的架構,定期自動抓取股票資料並寫入資料庫。
 
-## 這個專案在做什麼？（老師原始說明）
+## 這個專案在做什麼?(老師原始說明)
 
-簡單來說，整個流程像這樣：
+簡單來說,整個流程像這樣:
 
 ```
 排程器 (Scheduler)  →  發送任務 (Producer)  →  RabbitMQ 佇列  →  工人 (Worker) 執行爬蟲  →  寫入 MySQL / BigQuery
 ```
 
-- **Scheduler（排程器）**：每隔一段時間（例如 12 小時）自動觸發，就像鬧鐘
-- **Producer（生產者）**：把「要爬哪支股票」這件任務丟到 RabbitMQ 排隊
-- **RabbitMQ（訊息佇列）**：像是任務的「候位區」，讓工人依序領工作
-- **Worker（工人）**：從佇列拿任務，呼叫 FinMind API 抓股價資料
-- **MySQL / BigQuery**：最終把資料存進資料庫，之後可用來做分析
+- **Scheduler(排程器)**:每隔一段時間(例如 12 小時)自動觸發,就像鬧鐘
+- **Producer(生產者)**:把「要爬哪支股票」這件任務丟到 RabbitMQ 排隊
+- **RabbitMQ(訊息佇列)**:像是任務的「候位區」,讓工人依序領工作
+- **Worker(工人)**:從佇列拿任務,呼叫 FinMind API 抓股價資料
+- **MySQL / BigQuery**:最終把資料存進資料庫,之後可用來做分析
 
-## 為什麼要這樣設計？
+## 為什麼要這樣設計?
 
-初學者可能會想：「直接寫一個 Python script 一次把所有股票抓下來不就好了嗎？」
+初學者可能會想:「直接寫一個 Python script 一次把所有股票抓下來不就好了嗎?」
 
-是可以，但當你面對以下情境時就會卡住：
-- **資料量大**：上千支股票一個一個抓，一台電腦跑一整天還沒跑完
-- **需要容錯**：抓到一半某支股票失敗了，整支程式崩潰，前面的白跑
-- **需要水平擴展**：想多開幾台機器一起跑，script 架構做不到
+是可以,但當你面對以下情境時就會卡住:
+- **資料量大**:上千支股票一個一個抓,一台電腦跑一整天還沒跑完
+- **需要容錯**:抓到一半某支股票失敗了,整支程式崩潰,前面的白跑
+- **需要水平擴展**:想多開幾台機器一起跑,script 架構做不到
 
-所以業界會用 **Celery + RabbitMQ** 這種「分散式任務佇列」架構：任務丟進佇列後，可以多個 worker 同時領任務處理，失敗的任務還能自動重試。
+所以業界會用 **Celery + RabbitMQ** 這種「分散式任務佇列」架構:任務丟進佇列後,可以多個 worker 同時領任務處理,失敗的任務還能自動重試。
 
 ## 使用的技術
 
 | 技術 | 用途 | 為什麼用它 |
 | --- | --- | --- |
 | Python 3.11 | 主要開發語言 | 爬蟲、資料處理套件最豐富 |
-| [uv](https://docs.astral.sh/uv/) | 套件管理 | 比 pip/pipenv 快 10～100 倍 |
+| [uv](https://docs.astral.sh/uv/) | 套件管理 | 比 pip/pipenv 快 10~100 倍 |
 | [Celery](https://docs.celeryq.dev/) | 分散式任務佇列 | 讓任務可以分派到多台 worker |
 | [RabbitMQ](https://www.rabbitmq.com/) | 訊息中介 (broker) | Celery 依賴它來傳遞任務 |
 | [Flower](https://flower.readthedocs.io/) | Celery 監控介面 | 可視化看 worker 狀態與任務 |
 | [APScheduler](https://apscheduler.readthedocs.io/) | 排程器 | 定時觸發任務 |
 | MySQL | 關聯式資料庫 | 儲存爬回來的股價資料 |
 | Google BigQuery | 雲端資料倉儲 | 儲存大量歷史資料供分析 |
-| SQLAlchemy | ORM | 用 Python 物件操作資料庫，不用寫純 SQL |
+| SQLAlchemy | ORM | 用 Python 物件操作資料庫,不用寫純 SQL |
 | Docker + Docker Compose | 容器化部署 | 讓服務能一鍵啟動、跨平台執行 |
 | Google Cloud Secret Manager | 密碼管理 | 避免帳密寫死在程式碼裡 |
 
@@ -288,61 +460,61 @@ crawler/
 
 ## 學習順序建議
 
-如果你是第一次接觸這個專案，建議依序閱讀：
+如果你是第一次接觸這個專案,建議依序閱讀:
 
 1. `config.py` — 了解環境變數怎麼管理
 2. `worker.py` + `tasks.py` — 認識 Celery task 最小範例
-3. `producer.py` — 派送第一個任務，親手跑一次
+3. `producer.py` — 派送第一個任務,親手跑一次
 4. `tasks_crawler_finmind.py` — 看真實的爬蟲邏輯
 5. `producer_multi_queue.py` — 學習如何分流任務
-6. `scheduler.py` — 最後把一切串起來，自動化執行
+6. `scheduler.py` — 最後把一切串起來,自動化執行
 
 ## Docker Compose 檔案說明
 
-專案根目錄有很多 `.yml`，這些是 Docker Compose 設定檔，用來一鍵啟動各種服務。初看會眼花，這裡幫你分類：
+專案根目錄有很多 `.yml`,這些是 Docker Compose 設定檔,用來一鍵啟動各種服務。初看會眼花,這裡幫你分類:
 
-### 基礎設施（要先啟動）
+### 基礎設施(要先啟動)
 
 | 檔案 | 啟動什麼 | 說明 |
 | --- | --- | --- |
-| `rabbitmq.yml` | RabbitMQ + Flower | 本地開發用，使用 `dev` 網路。Flower 是 Celery 的監控 Web UI（port 5555） |
-| `rabbitmq-network.yml` | RabbitMQ + Flower | 正式環境版本，使用外部 `my_network` 網路，讓多個 compose 檔能共用網路 |
-| `mysql.yml` | MySQL 8.0 + phpMyAdmin | MySQL 在 3306，phpMyAdmin 在 8000（瀏覽器可視化管理 DB） |
+| `rabbitmq.yml` | RabbitMQ + Flower | 本地開發用,使用 `dev` 網路。Flower 是 Celery 的監控 Web UI(port 5555) |
+| `rabbitmq-network.yml` | RabbitMQ + Flower | 正式環境版本,使用外部 `my_network` 網路,讓多個 compose 檔能共用網路 |
+| `mysql.yml` | MySQL 8.0 + phpMyAdmin | MySQL 在 3306,phpMyAdmin 在 8000(瀏覽器可視化管理 DB) |
 
-### Worker（消費者，執行爬蟲）
-
-| 檔案 | 說明 |
-| --- | --- |
-| `docker-compose-worker.yml` | 單一 worker，使用 `dev` 網路，最簡單的版本 |
-| `docker-compose-worker-network.yml` | 起兩個 worker（twse、tpex），各自監聽不同 queue，使用 `my_network` |
-| `docker-compose-worker-network-version.yml` | 同上，但 image 版本可用 `DOCKER_IMAGE_VERSION` 環境變數指定，方便切換版本 |
-
-### Producer（生產者，派送任務）
+### Worker(消費者,執行爬蟲)
 
 | 檔案 | 說明 |
 | --- | --- |
-| `docker-compose-producer-network.yml` | 執行 `producer_multi_queue.py`，一次性派送任務到 twse/tpex queue |
-| `docker-compose-producer-network-version.yml` | 同上，image 版本可透過環境變數指定 |
+| `docker-compose-worker.yml` | 單一 worker,使用 `dev` 網路,最簡單的版本 |
+| `docker-compose-worker-network.yml` | 起兩個 worker(twse、tpex),各自監聽不同 queue,使用 `my_network` |
+| `docker-compose-worker-network-version.yml` | 同上,但 image 版本可用 `DOCKER_IMAGE_VERSION` 環境變數指定,方便切換版本 |
+
+### Producer(生產者,派送任務)
+
+| 檔案 | 說明 |
+| --- | --- |
+| `docker-compose-producer-network.yml` | 執行 `producer_multi_queue.py`,一次性派送任務到 twse/tpex queue |
+| `docker-compose-producer-network-version.yml` | 同上,image 版本可透過環境變數指定 |
 | `docker-compose-producer-duplicate-network-version.yml` | 執行去重複版本的 producer |
 
-### Scheduler（排程器）
+### Scheduler(排程器)
 
 | 檔案 | 說明 |
 | --- | --- |
-| `docker-compose-scheduler-network-version.yml` | 啟動 `scheduler.py`，按照排程自動派送任務 |
+| `docker-compose-scheduler-network-version.yml` | 啟動 `scheduler.py`,按照排程自動派送任務 |
 
 ### 命名規則小抄
 
-檔名看起來很長，其實有規則：
-- **`-network`**：使用外部 `my_network`（需要先 `docker network create my_network`），讓不同 compose 檔之間能互通
-- **沒 `-network`**：使用 compose 檔自己建立的 `dev` 網路，獨立不互通
-- **`-version`**：image 版本改用 `${DOCKER_IMAGE_VERSION}` 變數，啟動時要搭配 `DOCKER_IMAGE_VERSION=0.0.6 docker compose up -d`
-- **`-duplicate`**：使用 on_duplicate_key_update 版本的 task
+檔名看起來很長,其實有規則:
+- **`-network`**:使用外部 `my_network`(需要先 `docker network create my_network`),讓不同 compose 檔之間能互通
+- **沒 `-network`**:使用 compose 檔自己建立的 `dev` 網路,獨立不互通
+- **`-version`**:image 版本改用 `${DOCKER_IMAGE_VERSION}` 變數,啟動時要搭配 `DOCKER_IMAGE_VERSION=0.0.6 docker compose up -d`
+- **`-duplicate`**:使用 on_duplicate_key_update 版本的 task
 
 ### 典型啟動順序
 
 ```bash
-# 1. 建立共用網路（只要做一次）
+# 1. 建立共用網路(只要做一次)
 docker network create my_network
 
 # 2. 啟動基礎設施
@@ -352,7 +524,7 @@ docker compose -f mysql.yml up -d
 # 3. 啟動 workers
 DOCKER_IMAGE_VERSION=0.0.6 docker compose -f docker-compose-worker-network-version.yml up -d
 
-# 4. 啟動 scheduler（自動派送任務）
+# 4. 啟動 scheduler(自動派送任務)
 DOCKER_IMAGE_VERSION=0.0.6 docker compose -f docker-compose-scheduler-network-version.yml up -d
 
 # 5. 打開 http://localhost:5555 看 Flower 監控 worker 狀態
@@ -361,17 +533,17 @@ DOCKER_IMAGE_VERSION=0.0.6 docker compose -f docker-compose-scheduler-network-ve
 
 ## Dockerfile 說明
 
-專案有三個 Dockerfile，長得很像，差別在於「是否在 build 時產生 `.env`」：
+專案有三個 Dockerfile,長得很像,差別在於「是否在 build 時產生 `.env`」:
 
 | 檔案 | 用途 | 差別 |
 | --- | --- | --- |
-| `Dockerfile` | 最基本版本 | 複製整個專案進去，不產生 `.env`（環境變數需執行時給） |
-| `with.env.Dockerfile` | 開發/測試用 | build 時跑 `ENV=DOCKER genenv.py` 產生 `.env`（適合 docker 內跑） |
-| `prod.with.env.Dockerfile` | 正式環境用 | build 時跑 `ENV=PRODUCTION genenv.py` 產生 `.env`（使用正式環境的 host、帳密） |
+| `Dockerfile` | 最基本版本 | 複製整個專案進去,不產生 `.env`(環境變數需執行時給) |
+| `with.env.Dockerfile` | 開發/測試用 | build 時跑 `ENV=DOCKER genenv.py` 產生 `.env`(適合 docker 內跑) |
+| `prod.with.env.Dockerfile` | 正式環境用 | build 時跑 `ENV=PRODUCTION genenv.py` 產生 `.env`(使用正式環境的 host、帳密) |
 
-### Dockerfile 內部做了什麼？
+### Dockerfile 內部做了什麼?
 
-以 `Dockerfile` 為例，流程大致是：
+以 `Dockerfile` 為例,流程大致是:
 
 ```
 FROM ubuntu:22.04               ← 從乾淨的 Ubuntu 開始
@@ -379,31 +551,31 @@ FROM ubuntu:22.04               ← 從乾淨的 Ubuntu 開始
 → 安裝 uv                       ← Python 套件管理工具
 → 安裝 Python 3.11              ← 指定 Python 版本
 → COPY 專案檔案進容器
-→ uv sync --frozen              ← 根據 uv.lock 安裝所有套件（確保版本一致）
+→ uv sync --frozen              ← 根據 uv.lock 安裝所有套件(確保版本一致)
 → 設定 UTF-8 語系              ← 避免中文編碼問題
 → CMD bash                      ← 預設進入 bash
 ```
 
-**為什麼要 `uv sync --frozen`？**
-`--frozen` 會嚴格按照 `uv.lock` 的版本安裝，不會自己去解析最新版。這樣才能保證「開發機」跟「正式機」裝到的是一模一樣的套件版本，避免「我這裡跑得好好的」這種問題。
+**為什麼要 `uv sync --frozen`?**
+`--frozen` 會嚴格按照 `uv.lock` 的版本安裝,不會自己去解析最新版。這樣才能保證「開發機」跟「正式機」裝到的是一模一樣的套件版本,避免「我這裡跑得好好的」這種問題。
 
-**為什麼開發和正式要分開 Dockerfile？**
-因為不同環境的資料庫 host、帳密都不同。`genenv.py` 會根據 `ENV` 變數從 `local.ini` 讀對應區段，產生正確的 `.env`。
+**為什麼開發和正式要分開 Dockerfile?**
+因為不同環境的資料庫 host、帳密都不同。`genenv.py` 會根據 `ENV` 變數從 `local.ini` 讀對應區段,產生正確的 `.env`。
 
 ## .gitignore 說明
 
-`.gitignore` 列出「不要被 git 追蹤的檔案/資料夾」，避免意外把敏感資料或垃圾檔案推上 GitHub。
+`.gitignore` 列出「不要被 git 追蹤的檔案/資料夾」,避免意外把敏感資料或垃圾檔案推上 GitHub。
 
 | 項目 | 為什麼要忽略 |
 | --- | --- |
-| `*__pycache__/`、`*.pyc` | Python 編譯產生的暫存檔，換台電腦重新產生就好 |
-| `.vscode/`、`*.vscode` | 編輯器個人設定，每個人習慣不同 |
+| `*__pycache__/`、`*.pyc` | Python 編譯產生的暫存檔,換台電腦重新產生就好 |
+| `.vscode/`、`*.vscode` | 編輯器個人設定,每個人習慣不同 |
 | `*.pytest_cache/` | pytest 的快取 |
-| `.env` | **最重要！** 裡面有資料庫帳密、API key，絕不能進 git |
+| `.env` | **最重要!** 裡面有資料庫帳密、API key,絕不能進 git |
 | `*.egg-info`、`build/` | Python 打包產生的檔案 |
 | `.cache` | 各種工具的暫存 |
 
-**新手常見錯誤**：把 `.env` 推上 public repo，幾分鐘內密碼就會被掃到外洩。養成習慣：加 `.env` 進 `.gitignore` **永遠是第一步**。
+**新手常見錯誤**:把 `.env` 推上 public repo,幾分鐘內密碼就會被掃到外洩。養成習慣:加 `.env` 進 `.gitignore` **永遠是第一步**。
 
 ---
 
